@@ -1478,6 +1478,7 @@ All notable changes to this project will be documented in this file.
 - *(backups)* Support scheduled backups for application storage targets
 - *(api)* Add volume backup schedule delete endpoints
 - *(backups)* Add scheduled storage volume backups (#10946)
+- *(services)* Shared Redis cache for service templates (#11094)
 
 ### 🐛 Bug Fixes
 
@@ -6829,6 +6830,7 @@ All notable changes to this project will be documented in this file.
 - *(readme)* Serve sponsor images from Coollabs CDN
 - *(release)* Document SHA image promotion workflow
 - *(release)* Clarify branch strategy and SHA build flow
+- Update changelog
 
 ### ⚡ Performance
 
@@ -7782,6 +7784,7 @@ All notable changes to this project will be documented in this file.
 - Prepare for PR
 - Tag v4.x SHA images as edge
 - *(images)* Add edge tag for v4.x SHA builds (#11022)
+- Prepare for PR
 - Prepare for PR
 
 ### ◀️ Revert
