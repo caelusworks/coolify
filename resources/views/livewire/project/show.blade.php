@@ -2,8 +2,6 @@
     <x-slot:title>
         {{ data_get_str($project, 'name')->limit(10) }} > Environments | Coolify
     </x-slot>
-    <x-project.navbar :project="$project" />
-
     <div x-data="projectEnvironments()" class="w-full">
         <header class="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div class="min-w-0">
@@ -99,7 +97,7 @@
                     </div>
 
                     <div
-                        class="flex h-9 items-center rounded-lg border border-neutral-200 bg-white p-0.5 dark:border-white/[0.08] dark:bg-white/[0.035]">
+                        class="flex h-9 items-center rounded-lg border border-neutral-200 bg-white p-0.5 dark:border-white/[0.08] dark:bg-white/[0.06]">
                         <button type="button" x-on:click="setViewMode('table')"
                             class="flex size-7.5 items-center justify-center rounded-md transition-colors"
                             :class="viewMode === 'table'
@@ -200,30 +198,32 @@
                 <div
                     class="environments-table-grid border-b border-neutral-200 bg-neutral-50 px-4 py-2.5 text-[11px] font-medium text-neutral-500 dark:border-white/[0.08] dark:bg-white/[0.025] dark:text-fg-faint">
                     <div>Environment</div>
-                    <div>Resources</div>
+                    <div class="environment-resource-count">Resources</div>
                     <div class="environment-description">Description</div>
                     <div></div>
                 </div>
 
                 <template x-for="environment in paginatedEnvironments" :key="environment.uuid">
                     <div
-                        class="environments-table-grid group min-h-14 items-center border-b border-neutral-200 px-4 py-2.5 transition-colors last:border-b-0 hover:bg-neutral-50 dark:border-white/[0.07] dark:hover:bg-white/[0.025]">
+                        class="environments-table-grid group relative min-h-14 items-center border-b border-neutral-200 px-4 py-2.5 transition-colors last:border-b-0 hover:bg-neutral-50 dark:border-white/[0.07] dark:hover:bg-white/[0.025]">
+                        <a :href="environment.href" {{ wireNavigate() }} class="absolute inset-0"
+                            :aria-label="`Open ${environment.name}`"></a>
                         <div class="flex min-w-0 items-center gap-3">
                             <div
                                 class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-500 dark:border-white/[0.08] dark:bg-white/[0.035] dark:text-fg-dim">
                                 <x-reicon name="layers" class="size-4" />
                             </div>
                             <a :href="environment.href" {{ wireNavigate() }}
-                                class="truncate text-[13px] font-semibold text-black hover:underline dark:text-fg"
+                                class="relative truncate text-[13px] font-semibold text-black hover:underline dark:text-fg"
                                 x-text="environment.name"></a>
                         </div>
 
-                        <div class="text-[12px] text-neutral-600 dark:text-fg-dim"
+                        <div class="environment-resource-count text-[12px] text-neutral-600 dark:text-fg-dim"
                             x-text="environment.resourceCount"></div>
                         <p class="environment-description truncate text-[12px] text-neutral-500 dark:text-fg-dim"
                             x-text="environment.description || '-'"></p>
 
-                        <div class="flex items-center justify-end gap-0.5">
+                        <div class="relative flex items-center justify-end gap-0.5">
                             <a x-show="environment.addResourceHref" :href="environment.addResourceHref"
                                 {{ wireNavigate() }}
                                 class="flex size-7 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-black dark:text-fg-faint dark:hover:bg-white/[0.06] dark:hover:text-fg"

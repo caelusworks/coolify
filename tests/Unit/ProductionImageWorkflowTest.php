@@ -19,12 +19,12 @@ it('publishes v4 branch builds under the commit sha with a traceable internal ve
         ->toContain('ARG COOLIFY_VERSION')
         ->toContain('ENV COOLIFY_VERSION=${COOLIFY_VERSION}')
         ->and($constants)
-        ->toContain("'version' => env('COOLIFY_VERSION') ?: '4.3.1'");
+        ->toContain("'version' => env('COOLIFY_VERSION') ?: '4.3.2'");
 });
 
 it('orders a maintenance development build before its stable release', function () {
-    expect(version_compare('4.3.1-dev.d64cbda3e', '4.3.1', '<'))->toBeTrue()
-        ->and(version_compare('4.3.1', '4.3.1-dev.d64cbda3e', '>'))->toBeTrue();
+    expect(version_compare('4.3.2-dev.d64cbda3e', '4.3.2', '<'))->toBeTrue()
+        ->and(version_compare('4.3.2', '4.3.2-dev.d64cbda3e', '>'))->toBeTrue();
 });
 
 it('requires a reviewed draft release before building a stable version', function () {
@@ -32,6 +32,7 @@ it('requires a reviewed draft release before building a stable version', functio
 
     expect($workflow)
         ->toContain('name: Release Coolify Stable')
+        ->toContain('run-name: ${{ inputs.tag }}')
         ->toContain('workflow_dispatch:')
         ->toContain('tag:')
         ->toContain("github.ref_name != 'main'")
@@ -44,6 +45,7 @@ it('requires a reviewed draft release before building a stable version', functio
         ->toContain('tag_name: process.env.TAG_NAME')
         ->toContain('actions/github-script@v8')
         ->not->toContain('actions/github-script@v7')
+        ->not->toContain('environment: production-release')
         ->not->toContain('generate-notes');
 });
 
@@ -57,6 +59,35 @@ it('runs support image workflows from main', function (string $workflowFile) {
     'helper' => 'coolify-helper.yml',
     'realtime' => 'coolify-realtime.yml',
 ]);
+
+it('prevents the stable helper workflow from publishing an existing version', function () {
+    $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/coolify-helper.yml');
+
+    expect($workflow)
+        ->toContain('check-version:')
+        ->toContain('needs: check-version')
+        ->toContain('VERSION="${BASE_VERSION}"')
+        ->toContain('docker buildx imagetools inspect "$IMAGE"')
+        ->toContain('Version $VERSION already exists in $registry')
+        ->toContain('Version $VERSION is available in both registries')
+        ->toContain('Could not verify $IMAGE')
+        ->toContain('cancel-in-progress: false');
+});
+
+it('prevents the stable realtime workflow from publishing an existing version', function () {
+    $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/coolify-realtime.yml');
+
+    expect($workflow)
+        ->toContain('check-version:')
+        ->toContain('needs: check-version')
+        ->toContain('php bootstrap/getRealtimeVersion.php')
+        ->toContain('VERSION="${BASE_VERSION}"')
+        ->toContain('docker buildx imagetools inspect "$IMAGE"')
+        ->toContain('Version $VERSION already exists in $registry')
+        ->toContain('Version $VERSION is available in both registries')
+        ->toContain('Could not verify $IMAGE')
+        ->toContain('cancel-in-progress: false');
+});
 
 it('generates the production changelog from main', function () {
     $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/generate-changelog.yml');
