@@ -570,6 +570,15 @@ that hide secondary columns before allowing horizontal overflow.
 
 ---
 
+### Domain rows on mobile
+
+Domain tables become compact summary cards below 600px. Keep the public URL on
+its own line, followed by a short routing summary such as `HTTP → HTTPS · Port
+80 · Noindex`. Put DNS status and the existing icon actions on the final row.
+Do not squeeze desktop label/value columns into a mobile card or move settings
+behind an overflow menu. Long domains wrap, and icon actions retain 40px touch
+targets.
+
 ## 8. Modals, confirmations, and toasts
 
 ### Modals
@@ -629,8 +638,9 @@ Current toast behavior:
 - Reicon status tile for success, info, warning, danger, or default;
 - title plus optional description;
 - dismiss and copy-details actions;
-- up to four stacked notifications;
+- normally up to four stacked notifications, without evicting persistent notices;
 - four-second dismissal, paused while hovered;
+- `persistent: true` disables automatic dismissal, including after hover; users close these notices with the dismiss button;
 - support for all six screen positions and sanitized custom HTML.
 
 Do not bring back the old oversized dark rectangle.
