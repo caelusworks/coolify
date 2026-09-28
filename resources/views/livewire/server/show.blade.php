@@ -63,79 +63,6 @@
                     <x-unsaved-bar action="submit"
                         targets="name,description,ip,user,port,connectionTimeout,serverTimezone,wildcardDomain" />
 
-                    <x-application.settings-section id="server-overview-section" title="Server overview"
-                        helper="Connection health, provider state, operating system, and hardware details.">
-                        <x-slot:actions>
-                            @if ($provider)
-                                <x-status-badge :label="$provider . ($providerStatus ? ' · ' . ucfirst($providerStatus) : '')"
-                                    :type="$providerStatusType" />
-                                @if ($provider === 'Hetzner')
-                                    <x-forms.button type="button" class="size-8! px-0!"
-                                        wire:click.prevent="checkHetznerServerStatus(true)"
-                                        title="Refresh provider status">
-                                        <x-reicon name="refresh" class="size-3.5" />
-                                    </x-forms.button>
-                                @elseif ($provider === 'DigitalOcean')
-                                    <x-forms.button type="button" class="size-8! px-0!"
-                                        wire:click.prevent="checkDigitalOceanDropletStatus(true)"
-                                        title="Refresh provider status">
-                                        <x-reicon name="refresh" class="size-3.5" />
-                                    </x-forms.button>
-                                @elseif ($provider === 'Vultr')
-                                    <x-forms.button type="button" class="size-8! px-0!"
-                                        wire:click.prevent="checkVultrInstanceStatus(true)"
-                                        title="Refresh provider status">
-                                        <x-reicon name="refresh" class="size-3.5" />
-                                    </x-forms.button>
-                                @endif
-                            @endif
-                            @if ($server->server_metadata)
-                                <x-forms.button type="button" class="size-8! px-0!"
-                                    wire:click="refreshServerMetadata" title="Refresh server details">
-                                    <x-reicon name="refresh" class="size-3.5" />
-                                </x-forms.button>
-                            @endif
-                            @if ($server->isTransferredAway())
-                                <x-status-badge label="Transferred away" type="warning" />
-                            @else
-                                <x-status-badge :label="$server->isFunctional() ? 'Ready' : 'Validation required'"
-                                    :type="$server->isFunctional() ? 'success' : 'warning'" />
-                            @endif
-                        </x-slot:actions>
-
-                        <div class="flex items-start gap-3">
-                            <div
-                                class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-600 dark:bg-white/[0.06] dark:text-fg-dim">
-                                <x-reicon name="servers" class="size-4.5" />
-                            </div>
-                            <div class="min-w-0">
-                                <p class="truncate text-sm font-medium text-neutral-950 dark:text-fg">
-                                    {{ $server->name }}
-                                </p>
-                                <p class="mt-1 text-xs leading-5 text-neutral-500 dark:text-fg-dim">
-                                    @if ($server->isTransferredAway())
-                                        This server was migrated away from this Coolify instance and cannot be managed here.
-                                    @elseif ($server->isFunctional())
-                                        The server is reachable, validated, and ready to host resources.
-                                    @else
-                                        Validate the SSH connection before using this server.
-                                    @endif
-                                </p>
-                            </div>
-                        </div>
-
-                        @if ($server->server_metadata)
-                            @include('livewire.server.partials.server-details', ['server' => $server])
-                        @else
-                            <div class="mt-4 border-t border-neutral-200 pt-4 dark:border-white/[0.08]">
-                                <x-forms.button type="button" wire:click="refreshServerMetadata">
-                                    <x-reicon name="refresh" class="size-3.5" />
-                                    Fetch server details
-                                </x-forms.button>
-                            </div>
-                        @endif
-                    </x-application.settings-section>
-
                     <x-application.settings-section id="server-connection-section" title="Connection"
                         helper="Configure how Coolify identifies, reaches, and validates this server.">
                         <x-slot:actions>
@@ -196,6 +123,25 @@
                                     {{ $server->isFunctional() ? 'Revalidate connection' : 'Validate connection' }}
                                 </x-forms.button>
                             </x-process-dialog>
+                            @if (isDev())
+                                <x-forms.button type="button" wire:click="toggleManagement"
+                                    wire:confirm="{{ $server->isTransferredAway()
+                                        ? 'Enable management? Confirm that no other Coolify instance manages this server. Two active instances can cause conflicting deployments, proxy changes, backups, and restarts.'
+                                        : 'Disable management? Deployments, webhooks, scheduled tasks, backups, proxy updates, and monitoring will stop on this instance. Existing workloads continue to run.' }}"
+                                    title="{{ $server->isTransferredAway()
+                                        ? 'Let this instance run deployments, webhooks, scheduled tasks, backups, proxy updates, and monitoring for this server'
+                                        : 'Stop deployments, webhooks, scheduled tasks, backups, proxy updates, and monitoring for this server on this instance' }}"
+                                    canGate="update" :canResource="$server">
+                                    <x-reicon name="{{ $server->isTransferredAway() ? 'play-circle' : 'stop-circle' }}" class="size-3.5" />
+                                    {{ $server->isTransferredAway() ? 'Enable management' : 'Disable management' }}
+                                </x-forms.button>
+                            @endif
+                            @if ($server->isTransferredAway())
+                                <x-status-badge label="Transferred away" type="warning" />
+                            @else
+                                <x-status-badge :label="$server->isFunctional() ? 'Ready' : 'Validation required'"
+                                    :type="$server->isFunctional() ? 'success' : 'warning'" />
+                            @endif
                         </x-slot:actions>
 
                         @if ($server->isTransferredAway())
@@ -267,6 +213,91 @@
                                         ['value' => 'build', 'label' => 'Builds only'],
                                         ['value' => 'both', 'label' => 'Deployments and builds'],
                                     ]" />
+                            </div>
+                        @endif
+                    </x-application.settings-section>
+
+                    <x-application.settings-section id="server-overview-section" title="Server overview"
+                        helper="Provider state, operating system, and hardware details.">
+                        <x-slot:actions>
+                            @if ($provider)
+                                <x-status-badge :label="$provider . ($providerStatus ? ' · ' . ucfirst($providerStatus) : '')"
+                                    :type="$providerStatusType" />
+                                @if ($provider === 'Hetzner')
+                                    <x-forms.button type="button" class="size-8! px-0!"
+                                        wire:click.prevent="checkHetznerServerStatus(true)"
+                                        title="Refresh provider status">
+                                        <x-reicon name="refresh" class="size-3.5" />
+                                    </x-forms.button>
+                                @elseif ($provider === 'DigitalOcean')
+                                    <x-forms.button type="button" class="size-8! px-0!"
+                                        wire:click.prevent="checkDigitalOceanDropletStatus(true)"
+                                        title="Refresh provider status">
+                                        <x-reicon name="refresh" class="size-3.5" />
+                                    </x-forms.button>
+                                @elseif ($provider === 'Vultr')
+                                    <x-forms.button type="button" class="size-8! px-0!"
+                                        wire:click.prevent="checkVultrInstanceStatus(true)"
+                                        title="Refresh provider status">
+                                        <x-reicon name="refresh" class="size-3.5" />
+                                    </x-forms.button>
+                                @endif
+                                @if ($server->cloudProviderToken)
+                                    @if ($provider === 'Hetzner' && !$server->isFunctional() && $hetznerServerStatus === 'off')
+                                        <x-forms.button type="button" wire:click.prevent="startHetznerServer" isHighlighted
+                                            canGate="update" :canResource="$server">
+                                            Power On
+                                        </x-forms.button>
+                                    @elseif ($provider === 'DigitalOcean' && $digitalOceanDropletStatus === 'off')
+                                        <x-forms.button type="button" wire:click.prevent="startDigitalOceanDroplet"
+                                            isHighlighted canGate="update" :canResource="$server">
+                                            Power On
+                                        </x-forms.button>
+                                    @elseif ($provider === 'Vultr' && $vultrInstanceStatus === 'stopped')
+                                        <x-forms.button type="button" wire:click.prevent="startVultrInstance" isHighlighted
+                                            canGate="update" :canResource="$server">
+                                            Power On
+                                        </x-forms.button>
+                                    @endif
+                                @endif
+                            @endif
+                            @if ($server->server_metadata)
+                                <x-forms.button type="button" class="size-8! px-0!"
+                                    wire:click="refreshServerMetadata" title="Refresh server details">
+                                    <x-reicon name="refresh" class="size-3.5" />
+                                </x-forms.button>
+                            @endif
+                        </x-slot:actions>
+
+                        <div class="flex items-start gap-3">
+                            <div
+                                class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-600 dark:bg-white/[0.06] dark:text-fg-dim">
+                                <x-reicon name="servers" class="size-4.5" />
+                            </div>
+                            <div class="min-w-0">
+                                <p class="truncate text-sm font-medium text-neutral-950 dark:text-fg">
+                                    {{ $server->name }}
+                                </p>
+                                <p class="mt-1 text-xs leading-5 text-neutral-500 dark:text-fg-dim">
+                                    @if ($server->isTransferredAway())
+                                        This server was migrated away from this Coolify instance and cannot be managed here.
+                                    @elseif ($server->isFunctional())
+                                        The server is reachable, validated, and ready to host resources.
+                                    @else
+                                        Validate the SSH connection before using this server.
+                                    @endif
+                                </p>
+                            </div>
+                        </div>
+
+                        @if ($server->server_metadata)
+                            @include('livewire.server.partials.server-details', ['server' => $server])
+                        @else
+                            <div class="mt-4 border-t border-neutral-200 pt-4 dark:border-white/[0.08]">
+                                <x-forms.button type="button" wire:click="refreshServerMetadata">
+                                    <x-reicon name="refresh" class="size-3.5" />
+                                    Fetch server details
+                                </x-forms.button>
                             </div>
                         @endif
                     </x-application.settings-section>

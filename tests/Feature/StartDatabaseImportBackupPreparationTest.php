@@ -12,6 +12,8 @@ use App\Models\StandaloneDocker;
 use App\Models\StandalonePostgresql;
 use App\Models\Team;
 use App\Support\DatabaseImport\DatabaseImportSource;
+use App\Support\RemoteProcessCommand;
+use App\Support\ResourceStartActivity;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Filesystem\FilesystemManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -19,6 +21,7 @@ use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Spatie\Activitylog\Models\Activity;
 
 uses(RefreshDatabase::class);
 
@@ -70,7 +73,7 @@ function importServerBackup(object $test, string $path, string $magicHex): strin
         $test->team->id,
     );
 
-    return (string) $activity->getExtraProperty('command');
+    return (string) RemoteProcessCommand::read($activity);
 }
 
 test('plain and gzip server backups are copied into the database container unchanged', function (string $path, string $magicHex) {
@@ -113,7 +116,7 @@ test('uploaded backups use the same preparation as server backups', function (st
         new DatabaseImportSource('upload'),
         $this->team->id,
     );
-    $command = (string) $activity->getExtraProperty('command');
+    $command = (string) RemoteProcessCommand::read($activity);
 
     expect(str_contains($command, "'backup-decompress-"))->toBe($usesHelper)
         ->and(str_contains($command, "docker cp '/tmp/database-import-"))->toBeTrue();
@@ -147,7 +150,7 @@ test('s3 backups are prepared in the s3 helper and streamed into the database co
         new DatabaseImportSource('s3', path: 'backups/restore.sql.xz', s3StorageUuid: $storage->uuid),
         $this->team->id,
     );
-    $command = (string) $activity->getExtraProperty('command');
+    $command = (string) RemoteProcessCommand::read($activity);
 
     expect($command)
         ->toContain('unxz -c')
@@ -156,4 +159,16 @@ test('s3 backups are prepared in the s3 helper and streamed into the database co
 
     Queue::assertPushed(CoolifyTask::class, fn (CoolifyTask $job) => ! array_key_exists('serverTmpPath', $job->call_event_data)
         && str_starts_with((string) $job->call_event_data['containerName'], 's3-restore-'));
+});
+
+test('the import activity is created with its operation, before the CoolifyTask job can load it', function () {
+    $operationsAtCreation = [];
+    Activity::created(function (Activity $activity) use (&$operationsAtCreation) {
+        $operationsAtCreation[] = $activity->getExtraProperty('operation');
+    });
+
+    importServerBackup($this, '/srv/backups/app.sql', '2d2d20506f73');
+
+    expect($operationsAtCreation)->toBe([ResourceStartActivity::DATABASE_IMPORT_OPERATION]);
+    Queue::assertPushed(CoolifyTask::class);
 });

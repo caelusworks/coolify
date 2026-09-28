@@ -11,6 +11,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\DeleteResourceJob;
 use App\Jobs\ValidateAndInstallServerJob;
 use App\Models\Application;
+use App\Models\CloudProviderToken;
 use App\Models\PrivateKey;
 use App\Models\Project;
 use App\Models\Server as ModelsServer;
@@ -19,6 +20,7 @@ use App\Rules\ValidServerIp;
 use App\Support\ValidationPatterns;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Validation\ValidationException;
 use OpenApi\Attributes as OA;
 use Stringable;
@@ -46,14 +48,20 @@ class ServersController extends Controller
         $server->makeHidden([
             'id',
         ]);
-        if (request()->attributes->get('can_read_sensitive', false) === true) {
+        $canReadSensitive = request()->attributes->get('can_read_sensitive', false) === true;
+        if ($canReadSensitive) {
             $server->makeVisible([
                 'logdrain_axiom_api_key',
                 'logdrain_newrelic_license_key',
             ]);
         }
 
-        return serializeApiResponse($server);
+        $serialized = serializeApiResponse($server);
+        if (! $canReadSensitive && is_array($serialized->get('proxy'))) {
+            $serialized->put('proxy', Arr::except($serialized->get('proxy'), ['last_saved_proxy_configuration']));
+        }
+
+        return $serialized;
     }
 
     #[OA\Get(
@@ -305,7 +313,7 @@ class ServersController extends Controller
         if (is_null($teamId)) {
             return invalidTokenResponse();
         }
-        $server = ModelsServer::whereTeamId($teamId)->whereUuid($request->uuid)->first();
+        $server = ModelsServer::whereTeamId($teamId)->whereUuid($request->route('uuid'))->first();
         if (is_null($server)) {
             return response()->json(['message' => 'Server not found.'], 404);
         }
@@ -826,6 +834,20 @@ class ServersController extends Controller
                     type: 'string',
                 )
             ),
+            new OA\Parameter(
+                name: 'force',
+                in: 'query',
+                description: 'Also delete all resources on the server.',
+                required: false,
+                schema: new OA\Schema(type: 'boolean', default: false)
+            ),
+            new OA\Parameter(
+                name: 'delete_from_provider',
+                in: 'query',
+                description: 'Also delete the server from its cloud provider (Hetzner, Vultr or DigitalOcean). This cannot be undone.',
+                required: false,
+                schema: new OA\Schema(type: 'boolean', default: false)
+            ),
         ],
         responses: [
             new OA\Response(
@@ -886,6 +908,26 @@ class ServersController extends Controller
             return response()->json(['message' => 'Local server cannot be deleted.'], 400);
         }
 
+        $deleteFromProvider = filter_var($request->query('delete_from_provider', false), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if (is_null($deleteFromProvider)) {
+            return response()->json(['message' => 'delete_from_provider must be a boolean.'], 422);
+        }
+        if ($deleteFromProvider) {
+            $linkedProviders = array_keys(array_filter([
+                'hetzner' => $server->hetzner_server_id,
+                'vultr' => $server->vultr_instance_id,
+                'digitalocean' => $server->digitalocean_droplet_id,
+            ]));
+            if (empty($linkedProviders)) {
+                return response()->json(['message' => 'Server is not linked to a cloud provider.'], 422);
+            }
+            foreach ($linkedProviders as $provider) {
+                if (! CloudProviderToken::whereTeamId($server->team_id)->whereProvider($provider)->exists()) {
+                    return response()->json(['message' => "No {$provider} token found for this team. Add one before deleting the server from the cloud provider."], 422);
+                }
+            }
+        }
+
         if ($force) {
             foreach ($server->definedResources() as $resource) {
                 DeleteResourceJob::dispatch($resource);
@@ -898,13 +940,13 @@ class ServersController extends Controller
         $server->delete();
         DeleteServer::dispatch(
             $server->id,
-            false, // Don't delete from Hetzner via API
+            $deleteFromProvider,
             $server->hetzner_server_id,
             $server->cloud_provider_token_id,
             $server->team_id,
-            false, // Don't delete from Vultr via API
+            $deleteFromProvider,
             $server->vultr_instance_id,
-            false, // Don't delete from DigitalOcean via API
+            $deleteFromProvider,
             $server->digitalocean_droplet_id
         );
 
@@ -914,6 +956,7 @@ class ServersController extends Controller
             'server_name' => $deletedName,
             'ip' => $deletedIp,
             'force' => $force,
+            'delete_from_provider' => $deleteFromProvider,
         ]);
 
         return response()->json(['message' => 'Server deleted.']);

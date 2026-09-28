@@ -5,6 +5,7 @@
 - When a symptom matches an earlier fix, inspect that fix and prove why it no longer works before adding another workaround.
 - Test old reports against the current branch because later changes can make the report obsolete.
 - Use the same regression test before and after the production change so the result shows the behavior difference.
+- Redirect browser test output to a file (`> /tmp/x.log 2>&1`); piping it (`| tail`) hangs because the Playwright server keeps the pipe open.
 - Call `visit()` directly in each `tests/v4/Browser` test body; Pest does not mark a test that only uses helper-wrapped `visit()` as a browser test, so it fails with `sendText() on null`.
 
 ## Verify the complete user flow
@@ -16,6 +17,13 @@
 - Do not replace required SPA navigation with a full-page redirect to hide a lifecycle or ordering defect.
 - Do not add billing restrictions, live reconciliation, or fallback behavior unless the request includes them.
 - Treat implementation constraints as details. Do not expand a requested team-level control into a more complex policy model.
+
+## Test behavior, not source markup
+- Do not write tests that read Blade or CSS files as text to assert layout, classes, or copy; they break on every redesign and miss real failures.
+- Render the component (`Livewire::test()`, an HTTP request) and assert the result, including authorization; use a few `tests/v4/Browser` tests with screenshots for visual flows.
+- A source-text check is acceptable only for a correctness or security rule that rendering cannot prove easily, such as stable `wire:key` values or no raw user output.
+- Call the app code under test. Do not copy app logic into a test, assert only literals, constants, `class_exists`/`method_exists`, or PHP built-ins such as `escapeshellarg`.
+- Pest test files share one global function scope. Give file-level helper functions a unique name.
 
 ## Keep dynamic Livewire identities stable
 - In dynamic lists, key components and actions with immutable record identities, not counts, indexes, or array positions.
@@ -62,6 +70,8 @@
 ## Test the real runtime image
 - Deployment shell commands run in the Alpine/BusyBox helper image and pass through the non-root sudo parser. Verify new flags and shell syntax in that image and with `parseCommandsByLineForSudo()`; faked command output hides both failures.
 - Put multi-step remote shell logic in one `sh -c '<script>' sh <args>` line. The non-root parser then only puts sudo in front of it; it rewrites `x=$(...)`, `&&`, `|` and shell keywords in any other line.
+- `Server` has an identity map. Tests that create servers in several dataset cases with `RefreshDatabase` must call `Server::flushIdentityMap()` in `beforeEach`/`afterEach`, or a case reads the cached server of the previous case.
+- Host test runs share `storage/` with the dev container. Fake the `ssh-keys`/`ssh-mux` disks and `Process` in tests that run seeders or write SSH files, or the test deletes/chowns the dev instance's SSH keys and SSH breaks for `www-data`.
 - Dev QEMU servers from `dev:qemu` are seeded, not validated: they have no `coolify` Docker network, and Alpine has no bash until `InstallPrerequisites` runs.
 
 ## Format only your own files

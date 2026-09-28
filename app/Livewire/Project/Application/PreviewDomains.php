@@ -5,6 +5,7 @@ namespace App\Livewire\Project\Application;
 use App\Actions\Shared\CheckDomainDns;
 use App\Jobs\CheckDomainDnsJob;
 use App\Models\ApplicationPreview;
+use App\Services\Dns\ManagedDnsRecordCleanup;
 use App\Support\DomainPortOverrides;
 use App\Support\DomainUrlParts;
 use App\Support\ValidationPatterns;
@@ -392,7 +393,7 @@ class PreviewDomains extends Component
 
         match ($status) {
             'ok' => $this->dispatch('success', "DNS is configured correctly for {$host}."),
-            'failed' => $this->dispatch('error', "DNS is not configured for {$host}. Review the required DNS record."),
+            'failed' => $this->dispatch('error', "DNS is not configured for {$host}. Review the required DNS record. If you changed it recently, DNS propagation can take some time, so please try again later."),
             default => $this->dispatch('info', "DNS check skipped for {$host}."),
         };
     }
@@ -446,6 +447,8 @@ class PreviewDomains extends Component
 
     private function persistDomains(): bool
     {
+        $dnsCleanup = app(ManagedDnsRecordCleanup::class);
+        $previousDnsHostnames = $dnsCleanup->hostnamesOf($this->preview->fresh() ?? $this->preview);
         if ($this->preview->application->build_pack === 'dockercompose') {
             try {
                 $composeServices = $this->composeServices(failOnError: true);
@@ -487,6 +490,7 @@ class PreviewDomains extends Component
             $this->domainRows[$index]['url'] = DomainPortOverrides::withoutPort($row['url']);
         }
         $this->preview->save();
+        $dnsCleanup->queueReleaseOfRemovedHostnames($this->preview, $previousDnsHostnames, currentTeam()->id);
         $this->persistDnsStatuses();
         $this->refreshDomains();
         $this->dispatch('update_links');

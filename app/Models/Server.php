@@ -41,6 +41,7 @@ use Spatie\SchemalessAttributes\Casts\SchemalessAttributes;
 use Spatie\SchemalessAttributes\SchemalessAttributesTrait;
 use Spatie\Url\Url;
 use Stevebauman\Purify\Facades\Purify;
+use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 
 /**
@@ -123,6 +124,22 @@ class Server extends BaseModel
     public const PLACEHOLDER_IP = '1.2.3.4';
 
     public const PLACEHOLDER_IPS = [self::PLACEHOLDER_IP, '0.0.0.0', '::'];
+
+    /**
+     * Default Caddy proxy image. caddy-docker-proxy 2.13 ships Caddy 2.11.
+     */
+    public const RECOMMENDED_CADDY_PROXY_IMAGE = 'lucaslorentz/caddy-docker-proxy:2.13-alpine';
+
+    /**
+     * First caddy-docker-proxy version that ships Caddy 2.8+ (`log_append`, `basic_auth`).
+     * Version 2.8 of the image still runs Caddy 2.7.6.
+     */
+    public const MINIMUM_CURRENT_CADDY_PROXY_VERSION = [2, 9];
+
+    /**
+     * Address of the development `testing-host` server (docker-compose.dev*.yml, ServerSeeder).
+     */
+    public const DEV_TESTING_HOST_IP = 'coolify-testing-host';
 
     public static $batch_counter = 0;
 
@@ -582,11 +599,6 @@ class Server extends BaseModel
         $proxy_type = $this->proxyType();
         $redirect_enabled = $this->proxy->redirect_enabled ?? true;
         $redirect_url = $this->proxy->redirect_url;
-        if (isDev()) {
-            if ($proxy_type === ProxyTypes::CADDY->value) {
-                $dynamic_conf_path = '/data/coolify/proxy/caddy/dynamic';
-            }
-        }
         if ($proxy_type === ProxyTypes::TRAEFIK->value) {
             $default_redirect_file = "$dynamic_conf_path/default_redirect_503.yaml";
         } elseif ($proxy_type === ProxyTypes::CADDY->value) {
@@ -908,10 +920,24 @@ $siteAddress {
             return false;
         }
 
+        if ($this->proxy->get('certificates_restart_required')) {
+            return true;
+        }
+
         $savedSettings = $this->proxy->get('last_saved_settings');
         $appliedSettings = $this->proxy->get('last_applied_settings');
 
         return filled($savedSettings) && filled($appliedSettings) && $savedSettings !== $appliedSettings;
+    }
+
+    /**
+     * Record the configuration the proxy runs with after a start or restart.
+     */
+    public function markProxyConfigurationApplied(string $configuration): void
+    {
+        $this->proxy->last_applied_settings = str(base64_encode($configuration))->pipe('md5')->value();
+        $this->proxy->certificates_restart_required = false;
+        $this->save();
     }
 
     public function hasCurrentTraefikOutdatedInfo(): bool
@@ -942,6 +968,20 @@ $siteAddress {
     public function isLocalhost()
     {
         return $this->ip === 'host.docker.internal' || $this->id === 0;
+    }
+
+    /**
+     * True only in development for the `testing-host` server. That container runs containers on the
+     * host Docker daemon (/var/run/docker.sock), but its /data/coolify is a Docker named volume. The host
+     * daemon must therefore mount the volume's host path instead of /data/coolify (see devHostDockerPath()).
+     *
+     * Dev KVM VMs and all other servers have their own Docker daemon and their own /data/coolify.
+     * A `host.docker.internal` server writes to the real host /data/coolify, so it also needs no change.
+     */
+    public function sharesDevHostDocker(): bool
+    {
+        // The saving hook can leave a Stringable in `ip`, so compare the string value.
+        return isDev() && (string) $this->ip === self::DEV_TESTING_HOST_IP;
     }
 
     /**
@@ -1058,6 +1098,113 @@ $siteAddress {
     public function isTrafficAnalyticsEnabled(): bool
     {
         return (bool) data_get($this, 'settings.is_traffic_analytics_enabled', false);
+    }
+
+    /**
+     * Traffic analytics reads the access log of a Coolify-managed Traefik or Caddy proxy.
+     */
+    public function hasTrafficAnalyticsProxy(): bool
+    {
+        return in_array($this->proxyType(), [ProxyTypes::TRAEFIK->value, ProxyTypes::CADDY->value], true);
+    }
+
+    /**
+     * Why traffic analytics cannot be enabled on this server, or null when it can.
+     */
+    public function trafficAnalyticsUnsupportedReason(): ?string
+    {
+        if ($this->isSwarm() || $this->isBuildServer()) {
+            return 'Traffic analytics is not supported on Swarm/Build servers.';
+        }
+
+        if (! $this->hasTrafficAnalyticsProxy()) {
+            return 'Traffic analytics needs the Traefik or Caddy proxy.';
+        }
+
+        return null;
+    }
+
+    public function supportsTrafficAnalytics(): bool
+    {
+        return $this->trafficAnalyticsUnsupportedReason() === null;
+    }
+
+    /**
+     * Major and minor version from a caddy-docker-proxy image tag, for example [2, 8] for
+     * `lucaslorentz/caddy-docker-proxy:2.8-alpine`. Other images, `latest`, and digests without a tag give null.
+     *
+     * @return array{0: int, 1: int}|null
+     */
+    public static function caddyDockerProxyImageVersion(?string $image): ?array
+    {
+        if ($image === null || preg_match('#(?:^|/)caddy-docker-proxy:(\d+)\.(\d+)#', $image, $version) !== 1) {
+            return null;
+        }
+
+        return [(int) $version[1], (int) $version[2]];
+    }
+
+    /**
+     * Caddy image in the saved proxy configuration. Null for other proxies or a configuration that cannot be read.
+     */
+    public function configuredCaddyProxyImage(): ?string
+    {
+        if ($this->proxyType() !== ProxyTypes::CADDY->value) {
+            return null;
+        }
+
+        try {
+            $image = data_get(Yaml::parse((string) $this->proxy->get('last_saved_proxy_configuration')), 'services.caddy.image');
+        } catch (ParseException) {
+            return null;
+        }
+
+        return is_string($image) && $image !== '' ? $image : null;
+    }
+
+    /**
+     * The saved Caddy image when it is caddy-docker-proxy older than 2.9 (Caddy 2.7), else null.
+     * Unknown versions (custom images, `latest`, digests) are not reported.
+     */
+    public function outdatedCaddyProxyImage(): ?string
+    {
+        $image = $this->configuredCaddyProxyImage();
+        $version = self::caddyDockerProxyImageVersion($image);
+
+        return $version !== null && $version < self::MINIMUM_CURRENT_CADDY_PROXY_VERSION ? $image : null;
+    }
+
+    /**
+     * True when the Caddy proxy runs caddy-docker-proxy 2.9+ (Caddy 2.8+). The 2.8 image (the default before 2.13)
+     * runs Caddy 2.7.6, which rejects the whole Caddyfile when it contains newer directives. A saved change that
+     * is not applied yet may still run the old image, so it counts as unsupported.
+     */
+    private function caddyRunsCurrentVersion(): bool
+    {
+        if ($this->hasPendingProxyConfiguration()) {
+            return false;
+        }
+
+        $version = self::caddyDockerProxyImageVersion($this->configuredCaddyProxyImage());
+
+        return $version !== null && $version >= self::MINIMUM_CURRENT_CADDY_PROXY_VERSION;
+    }
+
+    /**
+     * Caddy's `log_append` tags access-log lines with the app UUID for traffic analytics. It needs Caddy 2.8+.
+     */
+    public function caddySupportsLogAppend(): bool
+    {
+        return $this->caddyRunsCurrentVersion();
+    }
+
+    /**
+     * Caddy 2.8 renamed `basicauth` to `basic_auth`. Caddy 2.7 knows only `basicauth`, and Caddy 2.8+ still
+     * accepts it as a deprecated name, so `basicauth` is the safe fallback.
+     */
+    public function caddySupportsBasicAuthDirective(): bool
+    {
+        return $this->caddyRunsCurrentVersion();
     }
 
     public function isServerApiEnabled(): bool
@@ -1212,6 +1359,7 @@ $siteAddress {
         $keydbs = StandaloneKeydb::where($destinationCondition)->get();
         $dragonflies = StandaloneDragonfly::where($destinationCondition)->get();
         $clickhouses = StandaloneClickhouse::where($destinationCondition)->get();
+        $sqlites = StandaloneSqlite::where($destinationCondition)->get();
 
         return $postgresqls
             ->concat($redis)
@@ -1221,6 +1369,7 @@ $siteAddress {
             ->concat($keydbs)
             ->concat($dragonflies)
             ->concat($clickhouses)
+            ->concat($sqlites)
             ->filter(fn ($item) => data_get($item, 'name') !== 'coolify-db');
     }
 
@@ -1890,11 +2039,13 @@ $siteAddress {
             return str($proxyType->value)->lower();
         });
         if ($validProxyTypes->contains(str($proxyType)->lower())) {
+            $previousProxyType = $this->proxyType();
             $this->proxy->set('type', str($proxyType)->upper());
             $this->proxy->set('status', 'exited');
             $this->proxy->set('last_saved_proxy_configuration', null);
             $this->proxy->set('last_saved_settings', null);
             $this->proxy->set('last_applied_settings', null);
+            $this->proxy->set('certificates_restart_required', false);
             $this->detected_traefik_version = null;
             $this->traefik_outdated_info = null;
             $this->save();
@@ -1905,9 +2056,24 @@ $siteAddress {
                     StartProxy::run($this);
                 }
             }
+            if ($previousProxyType !== $this->proxyType() && $this->shouldRestartSentinelForTrafficAnalytics()) {
+                // Sentinel keeps the traffic log mount, path and log format of the old proxy until it is recreated.
+                $this->restartSentinel();
+            }
         } else {
             throw new \Exception('Invalid proxy type.');
         }
+    }
+
+    /**
+     * Sentinel reads the proxy access log only when it runs and traffic analytics is on.
+     * The raw setting is used, because a switch to a proxy without analytics support must also drop the old log mount.
+     */
+    private function shouldRestartSentinelForTrafficAnalytics(): bool
+    {
+        return (bool) $this->settings->is_sentinel_enabled
+            && $this->isSentinelEnabled()
+            && $this->isTrafficAnalyticsEnabled();
     }
 
     public function isEmpty()
@@ -1921,6 +2087,21 @@ $siteAddress {
     {
         $configRepository = app(ConfigurationRepository::class);
         $configRepository->disableSshMux();
+    }
+
+    /**
+     * Return the server's CA certificate, generating it first when it does not exist yet.
+     */
+    public function ensureCaCertificate(): ?SslCertificate
+    {
+        $caCertificate = $this->sslCertificates()->where('is_ca_certificate', true)->first();
+        if ($caCertificate) {
+            return $caCertificate;
+        }
+
+        $this->generateCaCertificate();
+
+        return $this->sslCertificates()->where('is_ca_certificate', true)->first();
     }
 
     public function generateCaCertificate()

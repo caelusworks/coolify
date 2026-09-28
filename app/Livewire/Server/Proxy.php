@@ -2,7 +2,9 @@
 
 namespace App\Livewire\Server;
 
+use App\Actions\Proxy\DeleteTraefikCertificate;
 use App\Actions\Proxy\GetProxyConfiguration;
+use App\Actions\Proxy\GetTraefikCertificates;
 use App\Actions\Proxy\SaveProxyConfiguration;
 use App\Enums\ProxyTypes;
 use App\Models\Server;
@@ -25,6 +27,10 @@ class Proxy extends Component
     public ?string $redirectUrl = null;
 
     public bool $generateExactLabels = false;
+
+    public array $traefikCertificates = [];
+
+    public bool $traefikCertificatesLoaded = false;
 
     /**
      * Cache the versions.json file data in memory for this component instance.
@@ -211,6 +217,48 @@ class Proxy extends Component
         }
 
         return $matches[1];
+    }
+
+    /**
+     * The saved caddy-docker-proxy image when it is older than 2.9 (Caddy 2.7), else null.
+     */
+    public function getOutdatedCaddyImageProperty(): ?string
+    {
+        return $this->server->outdatedCaddyProxyImage();
+    }
+
+    public function loadTraefikCertificates(): void
+    {
+        $this->traefikCertificates = [];
+
+        try {
+            $this->authorize('view', $this->server);
+            $this->traefikCertificates = GetTraefikCertificates::run($this->server);
+            $this->traefikCertificatesLoaded = true;
+        } catch (\Throwable $e) {
+            $this->traefikCertificatesLoaded = true;
+            handleError($e, $this);
+        }
+    }
+
+    public function deleteTraefikCertificate(string $certificateId, string $password = ''): void
+    {
+        try {
+            $this->authorize('update', $this->server);
+            $certificate = DeleteTraefikCertificate::run($this->server, $certificateId);
+            auditLog('ui.proxy.certificate_deleted', [
+                'team_id' => $this->server->team_id,
+                'server_uuid' => $this->server->uuid,
+                'server_name' => $this->server->name,
+                'domain' => $certificate['main_domain'],
+                'resolver' => $certificate['resolver'],
+            ]);
+            $this->traefikCertificates = GetTraefikCertificates::run($this->server);
+            $this->dispatch('refreshServerShow');
+            $this->dispatch('success', 'TLS certificate deleted. Restart Traefik to remove it from the running proxy.');
+        } catch (\Throwable $e) {
+            handleError($e, $this);
+        }
     }
 
     /**

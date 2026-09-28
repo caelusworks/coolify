@@ -15,8 +15,8 @@ For UI/UX design specifications, principles, and visual standards, consult the l
 Docker Compose-based dev setup with services: coolify (app, which also runs Reverb WebSockets and the terminal server), postgres, redis, vite, testing-host, mailpit, minio.
 
 ```bash
-# One dev instance per git branch (containers, volumes, KVM VMs named after the branch)
-./scripts/dev start [qemu-profile]           # KVM VM as localhost when /dev/kvm + root/sudo, else testing-host
+# One dev instance per git branch (containers, volumes, VMs named after the branch)
+./scripts/dev start [qemu-profile]           # localhost VM: KVM (Linux, /dev/kvm + root/sudo) or Lima (macOS, limactl), else testing-host
 ./scripts/dev stop                           # stop containers and VMs; data is kept for the next start
 ./scripts/dev run                            # start + follow logs, stop on exit (Jean run script)
 ./scripts/dev urls                           # all instances, URLs, ports, and checkouts
@@ -29,7 +29,7 @@ Docker Compose-based dev setup with services: coolify (app, which also runs Reve
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
-The main checkout serves its branch at `localhost:8000` (Reverb `6001`, terminal `6002`, db `5432`, redis `6379`, vite `5173`). Worktrees get a port block at `20000 + slot*10` (app `+0`, Reverb `+1`, terminal `+2`, db `+3`, redis `+4`, vite `+5`). Each instance has its own libvirt network `coolify-dev-<slot>` (`10.221.<slot>.0/24`) and VMs `coolify-dev-<branch>--<profile>`; VMs are reused, use `php artisan dev:qemu <profile> --fresh` to rebuild one. If `APP_URL` in `.env` is a `*.ts.net` host, the browser ports are published with `tailscale serve`. Set `COOLIFY_DEV_INSTANCE=<name>` to run another instance from the same checkout.
+The main checkout serves its branch at `localhost:8000` (Reverb `6001`, terminal `6002`, db `5432`, redis `6379`, vite `5173`). Worktrees get a port block at `20000 + slot*10` (app `+0`, Reverb `+1`, terminal `+2`, db `+3`, redis `+4`, vite `+5`). Each instance has its own libvirt network `coolify-dev-<slot>` (`10.221.<slot>.0/24`) and VMs `coolify-dev-<branch>--<profile>`; VMs are reused, use `php artisan dev:qemu <profile> --fresh` to rebuild one. On macOS with Lima >= 2.0 (`brew install lima`), the localhost VM is the Lima instance `coolify-dev-<slot>-<profile>` (same profiles, users, and SSH key); Coolify reaches it through Lima's forwarded SSH port on `host.docker.internal`, and only guest ports 80/443 are forwarded to the Mac. Rebuild it with `limactl delete -f <vm>`. Force it with `COOLIFY_DEV_SERVER_BACKEND=lima`. If `APP_URL` in `.env` is a `*.ts.net` host, the browser ports are published with `tailscale serve`. Set `COOLIFY_DEV_INSTANCE=<name>` to run another instance from the same checkout.
 
 ## Testing the Self-Hosted Upgrade Process
 
@@ -38,7 +38,7 @@ Use the following workflow to test a self-hosted upgrade:
 1. Install the source version with the upgrade script:
 
    ```bash
-   bash upgrade.sh sha-6492d081362c009519481ac70e50873e39ba1861
+   bash scripts/upgrade.sh sha-6492d081362c009519481ac70e50873e39ba1861
    ```
 
 2. Set the current Coolify version and rebuild the cached configuration:
@@ -68,7 +68,7 @@ npm run build                   # production build
 
 ## Browser Tests (Pest Browser Plugin)
 
-Uses `pestphp/pest-plugin-browser` with Laravel Dusk 8. New browser tests go in `tests/v4/Browser/`.
+Uses `pestphp/pest-plugin-browser` (Playwright). Browser tests go in `tests/v4/Browser/`.
 
 ```bash
 # Run all browser tests
@@ -83,7 +83,7 @@ php artisan test --compact --filter='can login with valid credentials'
 
 ### Writing Browser Tests
 
-- Place new tests in `tests/v4/Browser/` — legacy Dusk tests in `tests/Browser/` should not be used as reference.
+- Place new tests in `tests/v4/Browser/`.
 - Use `RefreshDatabase` and seed required data (at minimum `InstanceSettings::create(['id' => 0])`) in `beforeEach`.
 - Key API: `visit()`, `fill(field, value)`, `click(text)`, `assertSee()`, `assertDontSee()`, `assertPathIs()`, `screenshot()`.
 - Always call `screenshot()` at the end of each test for debugging.
@@ -100,11 +100,10 @@ function loginAsRoot(): mixed
 ```
 
 - See `tests/v4/Browser/LoginTest.php`, `tests/v4/Browser/DashboardTest.php`, and `tests/v4/Browser/RegistrationTest.php` for conventions.
-- Legacy Dusk macros in `app/Providers/DuskServiceProvider.php` use the old `type()`/`press()` API — do not mix with Pest Browser Plugin's `fill()`/`click()` API.
 
 ### How Browser Tests Actually Run (no Docker, no display needed)
 
-`visit()` does NOT hit the dev app on `localhost:8000` and does NOT use the Dusk ChromeDriver on `:4444` (that config in `tests/DuskTestCase.php` is legacy). Instead the Pest Browser Plugin:
+`visit()` does NOT hit the dev app on `localhost:8000`. Instead the Pest Browser Plugin:
 
 1. Starts a local Playwright server (`node node_modules/.bin/playwright run-server`) and launches a **headless Chromium** from `~/.cache/ms-playwright` (install once with `npm install && npx playwright install chromium`).
 2. Boots an **in-process amphp HTTP server** on a random port that serves the Laravel app from the test process itself.
@@ -166,7 +165,7 @@ Because the "server" and the test share one PHP process, they share the phpunit 
 - **Server** — A managed host connected via SSH. Has settings, proxy config, and destinations.
 - **Application** — A deployed app (from Git or Docker image) with environment variables, previews, deployment queue.
 - **Service** — A pre-configured service stack from templates (`templates/service-templates-latest.json`).
-- **Standalone Databases** — Individual database instances (Postgres, MySQL, MariaDB, MongoDB, Redis, Clickhouse, KeyDB, Dragonfly).
+- **Standalone Databases** — Individual database instances (Postgres, MySQL, MariaDB, MongoDB, Redis, Clickhouse, KeyDB, Dragonfly, SQLite).
 - **Project/Environment** — Organizational hierarchy: Team → Project → Environment → Resources.
 - **Proxy** — Traefik reverse proxy managed per server.
 
@@ -256,7 +255,6 @@ This application is a Laravel application and its main Laravel ecosystems packag
 - laravel/socialite (SOCIALITE) - v5
 - livewire/livewire (LIVEWIRE) - v3
 - laravel/boost (BOOST) - v2
-- laravel/dusk (DUSK) - v8
 - laravel/pint (PINT) - v1
 - pestphp/pest (PEST) - v4
 - phpunit/phpunit (PHPUNIT) - v12
