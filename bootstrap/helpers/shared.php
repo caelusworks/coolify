@@ -1830,7 +1830,54 @@ function sourceIsLocal(Stringable $source)
     return false;
 }
 
-function replaceLocalSource(Stringable $source, Stringable $replacedWith)
+/**
+ * The host path of a local Compose bind source, relative to the resource directory $replacedWith.
+ *
+ * Sources with a `..` segment are resolved like Docker Compose resolves them, without touching the
+ * filesystem. Other sources keep the result of legacyReplaceLocalSource().
+ *
+ * @throws Exception If the source resolves above `/` or the resolved path is not shell-safe
+ */
+function replaceLocalSource(Stringable $source, Stringable $replacedWith): Stringable
+{
+    $path = $source->value();
+    if (! in_array('..', explode('/', $path), true)) {
+        return legacyReplaceLocalSource($source, $replacedWith);
+    }
+
+    if (str_starts_with($path, '~')) {
+        $path = $replacedWith->value().substr($path, 1);
+    } elseif (! str_starts_with($path, '/')) {
+        $path = $replacedWith->value().'/'.$path;
+    }
+
+    $segments = [];
+    foreach (explode('/', $path) as $segment) {
+        if ($segment === '' || $segment === '.') {
+            continue;
+        }
+        if ($segment === '..') {
+            if ($segments === []) {
+                throw new Exception("Volume source {$source} resolves to a path above /. Remove some ../ segments.");
+            }
+            array_pop($segments);
+
+            continue;
+        }
+        $segments[] = $segment;
+    }
+
+    $resolved = '/'.implode('/', $segments);
+    validateShellSafePath($resolved, 'volume source');
+
+    return str($resolved);
+}
+
+/**
+ * The host path that Coolify used for a local Compose bind source before it resolved `..` segments.
+ * A leading `../` became `{directory}./`. Resources that still store that path keep it.
+ */
+function legacyReplaceLocalSource(Stringable $source, Stringable $replacedWith): Stringable
 {
     if ($source->startsWith('.')) {
         $source = $source->replaceFirst('.', $replacedWith->value());
@@ -1846,6 +1893,22 @@ function replaceLocalSource(Stringable $source, Stringable $replacedWith)
     }
 
     return $source;
+}
+
+/**
+ * The host path of a local Compose bind source. A mount whose storage row already has the legacy path
+ * (also with a preview suffix) keeps it, because its data is there.
+ *
+ * @throws Exception If a new source resolves above `/` or is not shell-safe
+ */
+function resolveComposeBindSource(Stringable $source, Stringable $directory, ?string $existingFsPath = null): Stringable
+{
+    $legacySource = legacyReplaceLocalSource($source, $directory);
+    if ($existingFsPath !== null && preg_match('/^'.preg_quote($legacySource->value(), '/').'(-pr-\d+)?$/', $existingFsPath) === 1) {
+        return $legacySource;
+    }
+
+    return replaceLocalSource($source, $directory);
 }
 
 function convertToArray($collection)
@@ -2909,6 +2972,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                     return $volume;
                                 }
                             }
+                            $declaration = $topLevelVolumes->get($source->value());
                             $slugWithoutUuid = Str::slug($source, '-');
                             $name = "{$savedService->service->uuid}_{$slugWithoutUuid}";
                             if (is_string($volume)) {
@@ -2919,10 +2983,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                             } elseif (is_array($volume)) {
                                 data_set($volume, 'source', $name);
                             }
-                            $topLevelVolumes->put($name, [
-                                'name' => $name,
-                            ]);
-                            LocalPersistentVolume::updateOrCreate(
+                            $persistentVolume = LocalPersistentVolume::updateOrCreate(
                                 [
                                     'mount_path' => $target,
                                     'resource_id' => $savedService->id,
@@ -2935,6 +2996,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                     'resource_type' => get_class($savedService),
                                 ]
                             );
+                            $topLevelVolumes->put($name, composeRenamedVolumeDeclarationFor($declaration, $name, $persistentVolume));
                         }
                         dispatch(new ServerFilesFromServerJob($savedService));
 
@@ -3531,9 +3593,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                                 }
                                             }
                                         } else {
-                                            $topLevelVolumes->put($name, [
-                                                'name' => $name,
-                                            ]);
+                                            $topLevelVolumes->put($name, legacyApplicationRenamedVolumeDeclaration($name));
                                         }
                                     } else {
                                         if ($topLevelVolumes->has($name->value())) {
@@ -3546,9 +3606,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                                 }
                                             }
                                         } else {
-                                            $topLevelVolumes->put($name->value(), [
-                                                'name' => $name->value(),
-                                            ]);
+                                            $topLevelVolumes->put($name->value(), legacyApplicationRenamedVolumeDeclaration($name->value()));
                                         }
                                     }
                                 }
@@ -3605,9 +3663,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                                 }
                                             }
                                         } else {
-                                            $topLevelVolumes->put($source, [
-                                                'name' => $source,
-                                            ]);
+                                            $topLevelVolumes->put($source, legacyApplicationRenamedVolumeDeclaration($source));
                                         }
                                     }
                                 }
@@ -3658,9 +3714,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                                 }
                                             }
                                         } else {
-                                            $topLevelVolumes->put($name, [
-                                                'name' => $name,
-                                            ]);
+                                            $topLevelVolumes->put($name, legacyApplicationRenamedVolumeDeclaration($name));
                                         }
                                     } else {
                                         $uuid = $resource->uuid;
@@ -3676,9 +3730,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                                 }
                                             }
                                         } else {
-                                            $topLevelVolumes->put($name->value(), [
-                                                'name' => $name->value(),
-                                            ]);
+                                            $topLevelVolumes->put($name->value(), legacyApplicationRenamedVolumeDeclaration($name->value()));
                                         }
                                     }
                                 }
@@ -3735,9 +3787,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                                                 }
                                             }
                                         } else {
-                                            $topLevelVolumes->put($source, [
-                                                'name' => $source,
-                                            ]);
+                                            $topLevelVolumes->put($source, legacyApplicationRenamedVolumeDeclaration($source));
                                         }
                                     }
                                 }
@@ -4868,10 +4918,15 @@ function formatContainerStatus(string $status): string
 }
 
 /**
- * Check if password confirmation should be skipped.
+ * Check if the password step of a destructive action should be skipped.
  * Returns true if:
  * - Two-step confirmation is globally disabled
- * - User has no usable local password confirmation (including SSO users)
+ * - User has neither a password nor a linked OAuth identity (no way to confirm)
+ * - User confirmed recently (password or OAuth re-authentication), using the
+ *   same `auth.password_confirmed_at` session value and timeout as Laravel
+ *
+ * Users with a linked OAuth identity are never skipped silently: they confirm
+ * with their password or by re-authenticating through their provider.
  *
  * Used by modal-confirmation.blade.php to determine if password step should be shown.
  *
@@ -4884,20 +4939,30 @@ function shouldSkipPasswordConfirmation(): bool
         return true;
     }
 
-    // OAuth users may have an unusable generated password, so the linked
-    // identity is the source of truth for whether confirmation is possible.
     if (! Auth::user()?->requiresPasswordConfirmation()) {
         return true;
     }
 
-    return false;
+    return hasRecentPasswordConfirmation();
+}
+
+/**
+ * Whether the session holds a password confirmation within `auth.password_timeout`.
+ */
+function hasRecentPasswordConfirmation(): bool
+{
+    $confirmedAt = session('auth.password_confirmed_at');
+    if (! is_numeric($confirmedAt)) {
+        return false;
+    }
+
+    return (time() - (int) $confirmedAt) < (int) config('auth.password_timeout', 10800);
 }
 
 /**
  * Verify password for two-step confirmation.
- * Skips verification if:
- * - Two-step confirmation is globally disabled
- * - User has no usable local password confirmation (including SSO users)
+ * Skips verification in the cases listed in shouldSkipPasswordConfirmation().
+ * Users without a password must confirm through their OAuth provider first.
  *
  * @param  mixed  $password  The password to verify (may be array if skipped by frontend)
  * @param  Component|null  $component  Optional Livewire component to add errors to
@@ -4910,11 +4975,16 @@ function verifyPasswordConfirmation(mixed $password, ?Component $component = nul
         return true;
     }
 
+    $user = Auth::user();
+    if (! $user->hasPassword()) {
+        $component?->addError('password', 'Please confirm with your sign-in provider first.');
+
+        return false;
+    }
+
     // Verify the password
-    if (! Hash::check($password, Auth::user()->password)) {
-        if ($component) {
-            $component->addError('password', 'The provided password is incorrect.');
-        }
+    if (! is_string($password) || ! Hash::check($password, $user->password)) {
+        $component?->addError('password', 'The provided password is incorrect.');
 
         return false;
     }

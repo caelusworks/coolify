@@ -403,6 +403,19 @@ function legacyApplicationComposeVolumeName(Application $resource, string $sourc
 }
 
 /**
+ * The top-level declaration of a volume that a legacy application parser (compose_parsing_version 1
+ * and 2) renamed. Only applications from before Coolify kept driver options use these parsers, and
+ * they have no storage entries, so their volumes keep the old name-only declaration. Docker created
+ * them without the options, and Docker Compose would otherwise ask to recreate them.
+ *
+ * @return array{name: string}
+ */
+function legacyApplicationRenamedVolumeDeclaration(string $name): array
+{
+    return ['name' => $name];
+}
+
+/**
  * Records a warning when a legacy Compose application (parser version 1 or 2) does not use an
  * external volume as written. These parsers keep the old volume name (see
  * legacyApplicationComposeVolumeName()), so the resource keeps its data. The parser version 1 keeps
@@ -455,6 +468,41 @@ function composeLegacyExternalVolumeWarning(string $source, array $declaration, 
 function composeExternalVolumeDockerName(string $key, array $declaration): string
 {
     return (string) (data_get($declaration, 'name') ?? data_get($declaration, 'external.name') ?? $key);
+}
+
+/**
+ * The top-level declaration of a volume that a parser renamed (for example `data` to `{uuid}_data`).
+ * It keeps the options of the original declaration, such as `driver`, `driver_opts` and `labels`, so a
+ * local volume that binds a host folder still binds it. Variables in the options stay as written;
+ * Docker Compose resolves them from `.env`. The parser renamed the volume, so the declaration gets the
+ * new name, and it is not external: Docker Compose creates the renamed volume.
+ *
+ * @return array<string, mixed>
+ */
+function composeRenamedVolumeDeclaration(mixed $declaration, string $name): array
+{
+    $renamed = is_array($declaration) ? $declaration : [];
+    unset($renamed['external'], $renamed['name']);
+    $renamed['name'] = $name;
+
+    return $renamed;
+}
+
+/**
+ * The top-level declaration of a renamed volume with its storage entry. A volume that existed before
+ * Coolify kept the driver options (see the `ignores_compose_driver_options` flag) keeps its old
+ * name-only declaration: Docker created it without the options, and Docker Compose would otherwise
+ * ask to recreate it on every deployment.
+ *
+ * @return array<string, mixed>
+ */
+function composeRenamedVolumeDeclarationFor(mixed $declaration, string $name, ?LocalPersistentVolume $volume): array
+{
+    if ($volume?->ignores_compose_driver_options) {
+        return ['name' => $name];
+    }
+
+    return composeRenamedVolumeDeclaration($declaration, $name);
 }
 
 /**
@@ -1383,7 +1431,7 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                         } else {
                             $mainDirectory = str(base_configuration_dir().'/applications/'.$uuid);
                         }
-                        $source = replaceLocalSource($source, $mainDirectory);
+                        $source = resolveComposeBindSource($source, $mainDirectory, $foundConfig?->fs_path);
                         $isPreviewSuffixEnabled = $foundConfig
                             ? (bool) data_get($foundConfig, 'is_preview_suffix_enabled', true)
                             : true;
@@ -1423,14 +1471,12 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
 
                         continue;
                     }
-                    if ($topLevel->get('volumes')->has($source->value())) {
-                        $temp = $topLevel->get('volumes')->get($source->value());
-                        if (data_get($temp, 'driver_opts.type') === 'cifs') {
-                            continue;
-                        }
-                        if (data_get($temp, 'driver_opts.type') === 'nfs') {
-                            continue;
-                        }
+                    $declaration = $topLevel->get('volumes')->get($source->value());
+                    if (in_array(data_get($declaration, 'driver_opts.type'), ['cifs', 'nfs'], true)) {
+                        // Network volumes are used as written.
+                        $volumesParsed->put($index, $volume);
+
+                        continue;
                     }
                     $slugWithoutUuid = Str::slug($source, '-');
                     $name = "{$uuid}_{$slugWithoutUuid}";
@@ -1450,10 +1496,7 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                     } elseif (is_array($volume)) {
                         data_set($volume, 'source', $name);
                     }
-                    $topLevel->get('volumes')->put($name, [
-                        'name' => $name,
-                    ]);
-                    LocalPersistentVolume::updateOrCreate(
+                    $persistentVolume = LocalPersistentVolume::updateOrCreate(
                         [
                             'name' => $name,
                             'resource_id' => $originalResource->id,
@@ -1466,6 +1509,7 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                             'resource_type' => get_class($originalResource),
                         ]
                     );
+                    $topLevel->get('volumes')->put($name, composeRenamedVolumeDeclarationFor($declaration, $name, $persistentVolume));
                 }
                 dispatch(new ServerFilesFromServerJob($originalResource));
                 $volumesParsed->put($index, $volume);
@@ -2749,7 +2793,7 @@ function serviceParser(Service $resource): Collection
                         } else {
                             $mainDirectory = str(base_configuration_dir().'/applications/'.$uuid);
                         }
-                        $source = replaceLocalSource($source, $mainDirectory);
+                        $source = resolveComposeBindSource($source, $mainDirectory, $foundConfig?->fs_path);
                         LocalFileVolume::updateOrCreate(
                             [
                                 'mount_path' => $target,
@@ -2779,14 +2823,12 @@ function serviceParser(Service $resource): Collection
 
                         continue;
                     }
-                    if ($topLevel->get('volumes')->has($source->value())) {
-                        $temp = $topLevel->get('volumes')->get($source->value());
-                        if (data_get($temp, 'driver_opts.type') === 'cifs') {
-                            continue;
-                        }
-                        if (data_get($temp, 'driver_opts.type') === 'nfs') {
-                            continue;
-                        }
+                    $declaration = $topLevel->get('volumes')->get($source->value());
+                    if (in_array(data_get($declaration, 'driver_opts.type'), ['cifs', 'nfs'], true)) {
+                        // Network volumes are used as written.
+                        $volumesParsed->put($index, $volume);
+
+                        continue;
                     }
                     $slugWithoutUuid = Str::slug($source, '-');
                     $name = "{$uuid}_{$slugWithoutUuid}";
@@ -2803,10 +2845,7 @@ function serviceParser(Service $resource): Collection
                     } elseif (is_array($volume)) {
                         data_set($volume, 'source', $name);
                     }
-                    $topLevel->get('volumes')->put($name, [
-                        'name' => $name,
-                    ]);
-                    LocalPersistentVolume::updateOrCreate(
+                    $persistentVolume = LocalPersistentVolume::updateOrCreate(
                         [
                             'name' => $name,
                             'resource_id' => $originalResource->id,
@@ -2819,6 +2858,7 @@ function serviceParser(Service $resource): Collection
                             'resource_type' => get_class($originalResource),
                         ]
                     );
+                    $topLevel->get('volumes')->put($name, composeRenamedVolumeDeclarationFor($declaration, $name, $persistentVolume));
                 }
                 dispatch(new ServerFilesFromServerJob($originalResource));
                 $volumesParsed->put($index, $volume);
