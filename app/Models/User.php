@@ -10,7 +10,6 @@ use App\Notifications\TransactionalEmails\ResetPassword as TransactionalEmailsRe
 use App\Services\ChangelogService;
 use App\Traits\DeletesUserSessions;
 use DateTimeInterface;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -210,14 +209,38 @@ class User extends Authenticatable implements SendsEmail
     }
 
     /**
-     * Delete the user if they are not verified and have a force password reset.
+     * Delete the user if they are a provisional invitee that never joined any team.
      * This is used to clean up users that have been invited, did not accept the invitation (and did not verify their email and have a force password reset).
+     * Users that already belong to a team other than their own personal team, or still have pending invitations, are kept.
      */
-    public function deleteIfNotVerifiedAndForcePasswordReset()
+    public function deleteIfNotVerifiedAndForcePasswordReset(): void
     {
-        if ($this->hasVerifiedEmail() === false && $this->force_password_reset === true && ! TeamInvitation::whereEmail($this->email)->exists()) {
-            $this->delete();
+        if ($this->hasVerifiedEmail() || $this->force_password_reset !== true) {
+            return;
         }
+
+        if (TeamInvitation::whereEmail($this->email)->exists()) {
+            return;
+        }
+
+        if ($this->belongsToNonPersonalTeam()) {
+            return;
+        }
+
+        $this->delete();
+    }
+
+    /**
+     * Whether the user is a member of any team other than a personal team where they are the only member.
+     */
+    private function belongsToNonPersonalTeam(): bool
+    {
+        return $this->teams()
+            ->where(function ($query) {
+                $query->where('personal_team', false)
+                    ->orWhereHas('members', fn ($members) => $members->where('users.id', '!=', $this->id));
+            })
+            ->exists();
     }
 
     public function recreate_personal_team()
@@ -580,34 +603,12 @@ class User extends Authenticatable implements SendsEmail
     }
 
     /**
-     * Whether destructive actions must be confirmed. Users with a password
-     * confirm with it; users with a linked OAuth identity can also confirm by
-     * re-authenticating through their provider. Only users with neither have
-     * no way to confirm.
+     * Whether destructive actions must be confirmed with the account password.
+     * Users with a linked OAuth identity only confirm with the dialog's typed
+     * confirmation, and users without a password have no way to confirm.
      */
     public function requiresPasswordConfirmation(): bool
     {
-        return $this->hasPassword() || $this->hasSsoIdentity();
-    }
-
-    /**
-     * Enabled OAuth providers the user can re-authenticate with to confirm
-     * destructive actions.
-     *
-     * @return Collection<int, OauthSetting>
-     */
-    public function oauthConfirmationProviders(): Collection
-    {
-        $providers = $this->oauthIdentities()->distinct()->pluck('provider');
-        if ($providers->isEmpty()) {
-            return new Collection;
-        }
-
-        return OauthSetting::query()
-            ->whereIn('provider', $providers)
-            ->where('enabled', true)
-            ->get()
-            ->filter(fn (OauthSetting $setting): bool => $setting->couldBeEnabled())
-            ->values();
+        return $this->hasPassword() && ! $this->hasSsoIdentity();
     }
 }

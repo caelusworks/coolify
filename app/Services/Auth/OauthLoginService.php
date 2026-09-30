@@ -73,35 +73,6 @@ class OauthLoginService
     }
 
     /**
-     * Whether the identity returned by the provider is already linked to the
-     * given user. Used to confirm destructive actions through OAuth: it never
-     * links, updates, or creates identities or users, and never logs anyone in.
-     */
-    public function identityBelongsToUser(User $user, OauthSetting $oauthSetting, object $oauthUser): bool
-    {
-        if ($oauthSetting->provider === 'oidc') {
-            [$issuer, $subject] = $this->oidcIssuerAndSubject($oauthUser);
-            $providerUserId = $subject;
-        } else {
-            $issuer = $oauthSetting->provider;
-            $providerUserId = $oauthUser->id ?? null;
-            if (is_int($providerUserId)) {
-                $providerUserId = (string) $providerUserId;
-            }
-        }
-
-        if (! is_string($issuer) || $issuer === '' || ! is_string($providerUserId) || trim($providerUserId) === '') {
-            return false;
-        }
-
-        return $user->oauthIdentities()
-            ->where('provider', $oauthSetting->provider)
-            ->where('issuer', $issuer)
-            ->where('provider_user_id', $providerUserId)
-            ->exists();
-    }
-
-    /**
      * @return array{0: mixed, 1: mixed}
      */
     private function oidcIssuerAndSubject(object $oauthUser): array
@@ -133,14 +104,19 @@ class OauthLoginService
             throw new HttpException(403, 'Google account is not in the configured Workspace');
         }
 
+        $issuer = OauthIdentityIssuer::forSetting($oauthSetting);
+        if ($issuer === null) {
+            throw new HttpException(403, 'OAuth provider instance is not configured');
+        }
+
         $identityKey = [
             'provider' => $provider,
-            'issuer' => $provider,
+            'issuer' => $issuer,
             'provider_user_id' => $providerUserId,
         ];
 
         try {
-            return DB::transaction(function () use ($oauthUser, $oauthSetting, $email, $provider, $providerUserId, $rawClaims, $identityKey): User {
+            return DB::transaction(function () use ($oauthUser, $oauthSetting, $email, $provider, $issuer, $providerUserId, $rawClaims, $identityKey): User {
                 $identity = OauthIdentity::where($identityKey)->first();
 
                 if ($identity) {
@@ -176,7 +152,7 @@ class OauthLoginService
                 OauthIdentity::create([
                     'user_id' => $user->id,
                     'provider' => $provider,
-                    'issuer' => $provider,
+                    'issuer' => $issuer,
                     'provider_user_id' => $providerUserId,
                     'email' => $email,
                     'raw_claims' => $rawClaims,

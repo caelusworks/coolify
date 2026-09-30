@@ -68,6 +68,7 @@ class StartMongodb
 
             $server = $this->database->destination->server;
             $caCert = $server->ensureCaCertificate() ?? throw DatabaseStartException::missingCaCertificate();
+            array_push($this->commands, ...SslHelper::caCertificateFileCommands($caCert->ssl_certificate));
             $this->ssl_certificate = $this->database->sslCertificates()->first();
 
             if (! $this->ssl_certificate) {
@@ -104,11 +105,7 @@ class StartMongodb
                         $this->database->destination->network,
                     ],
                     'labels' => defaultDatabaseLabels($this->database)->toArray(),
-                    'healthcheck' => $this->database->healthCheckConfiguration([
-                        'CMD',
-                        'echo',
-                        'ok',
-                    ]),
+                    'healthcheck' => $this->database->healthCheckConfiguration($this->generate_health_check_command()),
                     'mem_limit' => $this->database->limits_memory,
                     'memswap_limit' => $this->database->limits_memory_swap,
                     'mem_swappiness' => $this->database->limits_memory_swappiness,
@@ -329,6 +326,38 @@ class StartMongodb
         add_coolify_default_environment_variables($this->database, $environment_variables, $environment_variables);
 
         return $environment_variables->all();
+    }
+
+    /**
+     * The shell is chosen when the check runs: images before MongoDB 5 (and some custom images) have only the legacy mongo shell.
+     */
+    private function generate_health_check_command(): array
+    {
+        $mongosh = $this->health_check_shell_command(legacy: false);
+        $mongo = $this->health_check_shell_command(legacy: true);
+
+        return ['CMD-SHELL', "if command -v mongosh >/dev/null 2>&1; then {$mongosh}; else {$mongo}; fi"];
+    }
+
+    private function health_check_shell_command(bool $legacy): string
+    {
+        $command = [$legacy ? 'mongo' : 'mongosh', '--quiet', '--host', $this->database->uuid];
+
+        if ($this->database->enable_ssl) {
+            $command = [...$command, $legacy ? '--ssl' : '--tls', $legacy ? '--sslCAFile' : '--tlsCAFile', '/etc/mongo/certs/ca.pem'];
+
+            if ($this->database->ssl_mode === 'verify-full') {
+                $command = [...$command, $legacy ? '--sslPEMKeyFile' : '--tlsCertificateKeyFile', '/etc/mongo/certs/server.pem'];
+            }
+        }
+
+        $command = [
+            ...$command,
+            '--eval',
+            $legacy ? 'quit(db.isMaster().ismaster === true ? 0 : 1)' : 'quit(db.hello().isWritablePrimary === true ? 0 : 1)',
+        ];
+
+        return implode(' ', array_map('escapeshellarg', $command));
     }
 
     private function add_custom_mongo_conf()
