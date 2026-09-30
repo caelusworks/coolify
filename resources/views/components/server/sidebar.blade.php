@@ -136,6 +136,23 @@
             'visible' => $server->isFunctional(),
         ],
         [
+            'label' => 'GitHub Runners',
+            'route' => 'server.github-runners',
+            'active' => $activeMenu === 'github-runners',
+            'icon' => 'play-circle',
+            'group' => 'Operations',
+            'visible' => ! $server->isLocalhost(),
+            'beta' => true,
+        ],
+        [
+            'label' => 'Registries',
+            'route' => 'server.registries',
+            'active' => $activeMenu === 'registries',
+            'icon' => 'layers',
+            'group' => 'Operations',
+            'visible' => auth()->user()?->can('update', $server),
+        ],
+        [
             'label' => 'Log Drains',
             'route' => 'server.log-drains',
             'active' => $activeMenu === 'log-drains',
@@ -266,6 +283,8 @@
                     @elseif ($menuItem['warning'] ?? false)
                         <x-reicon name="alert-triangle"
                             class="ml-auto size-3.5 shrink-0 text-orange-500 dark:text-warning" />
+                    @elseif ($menuItem['beta'] ?? false)
+                        <x-beta-badge class="ml-auto shrink-0" />
                     @endif
                 </a>
                 @if ($menuItem['active'] && isset($menuItem['children']))
