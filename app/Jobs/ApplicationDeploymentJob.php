@@ -329,7 +329,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             'status' => ApplicationDeploymentStatus::IN_PROGRESS->value,
             'horizon_job_worker' => gethostname(),
         ]);
-        if ($this->server->isFunctional() === false) {
+        if ($this->server->isFunctionalAfterRecheck() === false) {
             $this->application_deployment_queue->addLogEntry('Server is not functional.');
             $this->fail('Server is not functional.');
 
@@ -434,8 +434,9 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
 
         // An additional server of a multi-server application does not build: it pulls the image the main server pushed.
         if ($this->is_this_additional_server && str($this->application->docker_registry_image_name)->isNotEmpty()) {
-            if (! $this->server->canBuildApplications()) {
-                // Disabled build cache forces a rebuild, which would skip the registry pull on a server that cannot build.
+            // The main deployment already built the image (also for a forced rebuild or disabled build cache).
+            // A forced rebuild would skip the registry pull. Compose applications build on each server that can build.
+            if ($this->application->build_pack !== 'dockercompose' || ! $this->server->canBuildApplications()) {
                 $this->force_rebuild = false;
             }
             $this->application_deployment_queue->addLogEntry('Additional server: pulls the image from the registry, no build server needed.');
@@ -1472,8 +1473,12 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                 $this->application_deployment_queue->addLogEntry('Build configuration changed. Rebuilding image.');
             }
         } else {
-            if ($this->is_this_additional_server && ! $this->server->canBuildApplications() && $this->application->build_pack !== 'dockercompose') {
-                throw new DeploymentException("Image ({$this->production_image_name}) not found in the registry; the main server must push it first. The server ({$this->server->name}) is set to deployments only and cannot build it.");
+            if ($this->is_this_additional_server && $this->application->build_pack !== 'dockercompose') {
+                $message = "Image ({$this->production_image_name}) not found in the registry; the main server must push it first.";
+                $message .= $this->server->canBuildApplications()
+                    ? ' Additional servers do not build, so they run the same image as the main server.'
+                    : " The server ({$this->server->name}) is set to deployments only and cannot build it.";
+                throw new DeploymentException($message);
             }
             $this->application_deployment_queue->addLogEntry("Image not found ({$this->production_image_name}). Building new image.");
         }
@@ -5838,7 +5843,7 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
             $code = $exception->getCode();
             if ($code !== 69420) {
                 // 69420 means failed to push the image to the registry, so we don't need to remove the new version as it is the currently running one
-                if ($this->application->settings->is_consistent_container_name_enabled || str($this->application->settings->custom_internal_name)->isNotEmpty() || $this->pull_request_id !== 0) {
+                if ($this->application->settings->is_consistent_container_name_enabled || $this->pull_request_id !== 0) {
                     // do not remove already running container for PR deployments
                 } else {
                     $this->application_deployment_queue->addLogEntry('Deployment failed. Removing the new version of your application.', 'stderr');
