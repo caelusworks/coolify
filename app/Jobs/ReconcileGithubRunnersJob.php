@@ -10,6 +10,7 @@ use App\Services\GithubRunner\GithubRunnerContainer;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
@@ -42,14 +43,31 @@ class ReconcileGithubRunnersJob implements ShouldBeUnique, ShouldQueue
 
     public function handle(): void
     {
+        // Disabling keeps running jobs, so a disabled server is reconciled until its last runner is done.
         Server::query()
-            ->whereHas('githubRunnerConfig')
+            ->where(fn (Builder $query) => $query
+                ->whereHas('githubRunnerConfig', fn (Builder $config) => $config->where('is_enabled', true))
+                ->orWhereHas('githubRunnerExecutions', fn (Builder $execution) => $execution->whereIn('status', GithubRunnerStatus::occupying())))
             ->with('settings')
             ->get()
             ->filter(fn (Server $server) => $server->isFunctional())
             ->each(fn (Server $server) => $this->reconcileServer($server));
 
+        $this->removeRunnersOfDeletedServers();
         $this->reconcileQueued();
+    }
+
+    /**
+     * Removes executions that still occupy a runner of a deleted server (for example a server deleted
+     * without model events), because they block deleting the GitHub App.
+     */
+    private function removeRunnersOfDeletedServers(): void
+    {
+        GithubRunnerExecution::deleteAndDeregister(
+            GithubRunnerExecution::query()
+                ->whereNull('server_id')
+                ->whereIn('status', GithubRunnerStatus::occupying())
+        );
     }
 
     private function reconcileServer(Server $server): void

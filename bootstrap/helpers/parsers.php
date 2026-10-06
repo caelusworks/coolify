@@ -22,11 +22,10 @@ use Symfony\Component\Yaml\Yaml;
  * This should be called BEFORE saving to database to prevent malicious data from being stored.
  *
  * @param  string  $composeYaml  The raw Docker Compose YAML content
- * @param  string|null  $resourceDirectory  The resource directory, if the resource exists (see validateComposeContentVolumeSource())
  *
  * @throws Exception If the compose file contains command injection attempts
  */
-function validateDockerComposeForInjection(string $composeYaml, ?string $resourceDirectory = null): void
+function validateDockerComposeForInjection(string $composeYaml): void
 {
     try {
         $parsed = Yaml::parse($composeYaml);
@@ -79,7 +78,7 @@ function validateDockerComposeForInjection(string $composeYaml, ?string $resourc
                             }
                         }
                     }
-                    validateComposeContentVolumeSource($volume, $resourceDirectory);
+                    validateComposeContentVolumeSource($volume);
                 }
             }
         }
@@ -87,9 +86,10 @@ function validateDockerComposeForInjection(string $composeYaml, ?string $resourc
         if (is_array($serviceConfig) && isset($serviceConfig['networks']) && is_array($serviceConfig['networks'])) {
             foreach ($serviceConfig['networks'] as $networkKey => $networkDetails) {
                 if (is_int($networkKey) && (is_string($networkDetails) || is_int($networkDetails))) {
-                    validateComposeNetworkName((string) $networkDetails, 'service network');
+                    validateComposeNetworkNameWithVariables((string) $networkDetails, 'service network', (string) $serviceName);
                 } elseif (is_string($networkKey) || is_int($networkKey)) {
-                    validateComposeNetworkName((string) $networkKey, 'service network');
+                    // Compose does not interpolate keys, so a key must be a plain network name.
+                    validateComposeNetworkName((string) $networkKey, 'service network', (string) $serviceName);
                 }
             }
         }
@@ -129,55 +129,27 @@ function composeResourceDirectory(Application|Service $resource): string
 }
 
 /**
- * Coolify writes the `content:` of a Compose bind volume to the host, so that file must be inside
- * the resource directory. The source must be a `./` path that stays inside the resource directory,
- * or an absolute path inside $resourceDirectory. Sources with `~`, `..` or variables are rejected,
- * because their host path is not known before the write. Bind volumes without `content:` are not
- * changed: an administrator can mount any host path.
+ * Coolify writes the `content:` of a Compose bind volume to the source path on the host. Only
+ * administrators can edit a Compose file, and they can mount any host path, so the source can be
+ * any path, also outside the resource directory. It must exist and be safe to
+ * use in a shell command; Coolify escapes it in every remote command.
  *
  * @param  array<string, mixed>  $volume  A long-syntax Compose volume
  *
- * @throws Exception If Coolify would write the content outside the resource directory
+ * @throws Exception If the source is missing or contains shell metacharacters
  */
-function validateComposeContentVolumeSource(array $volume, ?string $resourceDirectory = null): void
+function validateComposeContentVolumeSource(array $volume): void
 {
     if (! array_key_exists('content', $volume) || ($volume['type'] ?? null) !== 'bind') {
         return;
     }
 
     $source = $volume['source'] ?? null;
-    $displaySource = is_scalar($source) && (string) $source !== '' ? (string) $source : '(empty)';
-    $error = new Exception(
-        "Volume source {$displaySource} with content must be inside the resource directory. Use a relative path such as ./config/app.conf."
-    );
-
-    if (! is_string($source) || str_contains($source, '$') || str_contains($source, '\\')) {
-        throw $error;
-    }
-    if (in_array('..', explode('/', $source), true)) {
-        throw $error;
+    if (! is_string($source) || trim($source) === '') {
+        throw new Exception('Invalid Docker volume definition (array syntax): A bind volume with content needs a source path.');
     }
 
-    if (str_starts_with($source, './')) {
-        $baseDirectory = $resourceDirectory ?? '/coolify-resource-directory';
-        $path = $baseDirectory.'/'.substr($source, 2);
-    } elseif (str_starts_with($source, '/') && $resourceDirectory !== null) {
-        $baseDirectory = $resourceDirectory;
-        $path = $source;
-    } else {
-        throw $error;
-    }
-
-    try {
-        $baseDirectory = normalizeUnixPath($baseDirectory);
-        $path = normalizeUnixPath($path);
-    } catch (Exception) {
-        throw $error;
-    }
-
-    if (! str_starts_with($path, $baseDirectory.'/')) {
-        throw $error;
-    }
+    validateComposeArrayVolumeSource($source);
 }
 
 /**
@@ -259,40 +231,44 @@ function ensureComposeNetworkNameVariables(Application|Service $resource, iterab
 }
 
 /**
- * A network `name:` may be such a variable: only Docker Compose reads this value and it never runs a
- * shell; Coolify's own network commands use the network keys. The default must still be a valid
- * network name, and nothing else is allowed around the variable.
+ * A network `name:` may contain variables: only Docker Compose reads this value and it never runs a
+ * shell; Coolify's own network commands use the network keys.
  *
- * @throws Exception If the value is not a valid network name or such a variable
+ * @throws Exception If the value is not a valid network name with safe variables
  */
 function validateComposeNetworkNameField(string $name): void
 {
+    validateComposeNetworkNameWithVariables($name, 'network name field');
+}
+
+/**
+ * Allows $VAR, ${VAR}, ${VAR:-default} and ${VAR-default} with safe defaults in a network value that Compose interpolates.
+ */
+function validateComposeNetworkNameWithVariables(string $name, string $context, ?string $serviceName = null): void
+{
     $variable = composeNetworkNameVariable($name);
     if ($variable !== null) {
-        if ($variable['default'] !== null) {
-            validateComposeNetworkName($variable['default'], 'network name field');
-        }
+        $isValid = $variable['default'] === null || ValidationPatterns::isValidDockerNetwork($variable['default']);
+    } else {
+        $hasSafeDefaults = true;
+        $withoutVariables = preg_replace_callback(
+            '/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}|\$[A-Za-z_][A-Za-z0-9_]*/',
+            function (array $matches) use (&$hasSafeDefaults): string {
+                $default = $matches[2] ?? '';
+                if ($default !== '' && preg_match('/\A[A-Za-z0-9_.-]+\z/', $default) !== 1) {
+                    $hasSafeDefaults = false;
+                }
 
-        return;
+                return 'x';
+            },
+            $name,
+        );
+        $isValid = $hasSafeDefaults && $withoutVariables !== null && ValidationPatterns::isValidDockerNetwork($withoutVariables);
     }
 
-    // Compose also resolves variables inside a longer name, for example ${COMPOSE_PROJECT_NAME}_default.
-    // Each variable must be $VAR, ${VAR}, ${VAR:-default} or ${VAR-default} with a safe default; the name
-    // is then checked with each variable replaced, so no shell syntax can remain.
-    $withoutVariables = preg_replace_callback(
-        '/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}|\$[A-Za-z_][A-Za-z0-9_]*/',
-        function (array $matches): string {
-            $default = $matches[2] ?? '';
-            if ($default !== '' && preg_match('/\A[A-Za-z0-9_.-]+\z/', $default) !== 1) {
-                throw new Exception('Invalid Docker Compose network name field. Variable defaults may contain only alphanumeric characters, dots, hyphens, and underscores.');
-            }
-
-            return 'x';
-        },
-        $name,
-    );
-
-    validateComposeNetworkName($withoutVariables ?? $name, 'network name field');
+    if (! $isValid) {
+        throw invalidComposeNetworkNameException($name, $context, $serviceName, allowsVariables: true);
+    }
 }
 
 /**
@@ -300,14 +276,21 @@ function validateComposeNetworkNameField(string $name): void
  *
  * @throws Exception If the network name is not a valid Docker network identifier
  */
-function validateComposeNetworkName(string $networkName, string $context = 'network name'): void
+function validateComposeNetworkName(string $networkName, string $context = 'network name', ?string $serviceName = null): void
 {
     if ($networkName === '' || ! ValidationPatterns::isValidDockerNetwork($networkName)) {
-        throw new Exception(
-            'Invalid Docker Compose '.$context.
-            '. Network names must start with an alphanumeric character and contain only alphanumeric characters, dots, hyphens, and underscores.'
-        );
+        throw invalidComposeNetworkNameException($networkName, $context, $serviceName);
     }
+}
+
+function invalidComposeNetworkNameException(string $name, string $context, ?string $serviceName, bool $allowsVariables = false): Exception
+{
+    $location = $serviceName === null ? '' : " in service {$serviceName}";
+
+    return new Exception(
+        "Invalid Docker Compose {$context} \"{$name}\"{$location}. Network names must start with an alphanumeric character and contain only alphanumeric characters, dots, hyphens, and underscores"
+        .($allowsVariables ? ', and can use variables such as ${NETWORK:-default}.' : '.')
+    );
 }
 
 /**
@@ -330,8 +313,9 @@ function isComposeExternalVolume(mixed $declaration): bool
 /**
  * Returns the top-level declaration of a volume source when the Compose file declares it as
  * external, and null for all other sources. The parsers use an external volume as written: no
- * "{uuid}_" prefix, no preview suffix and no LocalPersistentVolume row, so that Coolify never
- * removes a volume that it does not own.
+ * "{uuid}_" prefix and no LocalPersistentVolume row, so that Coolify never removes a volume that it
+ * does not own. A preview deployment never uses an external volume; it gets its own volume
+ * "{uuid}_{volume}-pr-{id}" like any other named volume.
  *
  * @param  iterable<array-key, mixed>  $topLevelVolumes
  * @return array<string, mixed>|null
@@ -352,9 +336,11 @@ function composeExternalVolumeDeclaration(iterable $topLevelVolumes, string $sou
 /**
  * Tells if a parser uses the volume source as written because it is an external volume.
  *
+ * Only for production deployments: a preview deployment always gets its own volume.
+ *
  * Before Coolify used external volumes as written, the parsers renamed them like all other
- * volumes (the old name, for example "{uuid}_{volume}" or "{uuid}_{volume}-pr-{id}"), so the
- * resource wrote its data into the renamed volume. When the owner still has the storage entry
+ * volumes (the old name, for example "{uuid}_{volume}"), so the resource wrote its data into the
+ * renamed volume. When the owner still has the storage entry
  * with the old name, the parser must keep the old name, or the resource loses its data. Then
  * this function records a warning on the resource and returns false. When the user deletes that
  * storage entry, the next parse uses the external volume.
@@ -419,7 +405,8 @@ function legacyApplicationRenamedVolumeDeclaration(string $name): array
  * Records a warning when a legacy Compose application (parser version 1 or 2) does not use an
  * external volume as written. These parsers keep the old volume name (see
  * legacyApplicationComposeVolumeName()), so the resource keeps its data. The parser version 1 keeps
- * the name of a production volume, so it uses the external volume and gets no warning.
+ * the name of a production volume, so it uses the external volume and gets no warning. A preview
+ * always uses its own volume, so it gets no warning either.
  *
  * The volume names are not validated here, so that the legacy parsers keep their old behavior. The
  * warning shows the Docker volume name only when it is a literal, valid Docker volume name.
@@ -428,6 +415,9 @@ function legacyApplicationRenamedVolumeDeclaration(string $name): array
  */
 function warnLegacyApplicationComposeExternalVolume(Application $resource, iterable $topLevelVolumes, string $source, int $pull_request_id): void
 {
+    if ($pull_request_id !== 0) {
+        return;
+    }
     $declaration = collect($topLevelVolumes)->get($source);
     if (! isComposeExternalVolume($declaration)) {
         return;
@@ -494,15 +484,23 @@ function composeRenamedVolumeDeclaration(mixed $declaration, string $name): arra
  * name-only declaration: Docker created it without the options, and Docker Compose would otherwise
  * ask to recreate it on every deployment.
  *
+ * A preview volume does not get `driver_opts` that name a host device (for example a bind mount of a
+ * host folder): the preview would otherwise mount the same folder or disk as the production volume.
+ *
  * @return array<string, mixed>
  */
-function composeRenamedVolumeDeclarationFor(mixed $declaration, string $name, ?LocalPersistentVolume $volume): array
+function composeRenamedVolumeDeclarationFor(mixed $declaration, string $name, ?LocalPersistentVolume $volume, bool $isPreview = false): array
 {
     if ($volume?->ignores_compose_driver_options) {
         return ['name' => $name];
     }
 
-    return composeRenamedVolumeDeclaration($declaration, $name);
+    $renamed = composeRenamedVolumeDeclaration($declaration, $name);
+    if ($isPreview && filled(data_get($renamed, 'driver_opts.device')) && data_get($renamed, 'driver_opts.type') !== 'tmpfs') {
+        unset($renamed['driver_opts']);
+    }
+
+    return $renamed;
 }
 
 /**
@@ -1311,6 +1309,7 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
     }
 
     // Parse the rest of the services
+    $previewOwnVolumes = collect([]);
     foreach ($services as $serviceName => $service) {
         $image = data_get_str($service, 'image');
         $restart = data_get_str($service, 'restart', RESTART_MODE);
@@ -1391,7 +1390,7 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                     if ($source !== null && ! empty($source->value())) {
                         validateComposeArrayVolumeSource($source->value());
                     }
-                    validateComposeContentVolumeSource($volume, composeResourceDirectory($resource));
+                    validateComposeContentVolumeSource($volume);
                     if ($target !== null && ! empty($target->value())) {
                         try {
                             validateShellSafePath($target->value(), 'volume target');
@@ -1461,22 +1460,28 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                         }
                     }
                 } elseif ($type->value() === 'volume') {
-                    $legacyName = "{$uuid}_".Str::slug($source, '-');
-                    if ($isPullRequest) {
-                        $legacyName = addPreviewDeploymentSuffix($legacyName, $pull_request_id);
-                    }
-                    if (useComposeExternalVolumeAsWritten($resource, $originalResource, $topLevel->get('volumes'), $source->value(), $legacyName)) {
-                        // Previews share the external volume. It gets no row, so Coolify never removes it.
+                    // A preview never mounts an external or network (NFS, CIFS) volume: two deployments
+                    // that write into the same data directory (for example two databases) can corrupt it.
+                    // The preview gets its own volume with the name that older Coolify versions gave
+                    // it, so it keeps its data, and the preview cleanup removes it.
+                    $declaration = $topLevel->get('volumes')->get($source->value());
+                    $isNetworkVolume = in_array(data_get($declaration, 'driver_opts.type'), ['cifs', 'nfs'], true);
+                    $isPreviewOwnVolume = $isPullRequest
+                        && ($isNetworkVolume || composeExternalVolumeDeclaration($topLevel->get('volumes'), $source->value()) !== null);
+                    if (! $isPullRequest && useComposeExternalVolumeAsWritten($resource, $originalResource, $topLevel->get('volumes'), $source->value(), "{$uuid}_".Str::slug($source, '-'))) {
+                        // The external volume gets no row, so Coolify never removes it.
                         $volumesParsed->put($index, $volume);
 
                         continue;
                     }
-                    $declaration = $topLevel->get('volumes')->get($source->value());
-                    if (in_array(data_get($declaration, 'driver_opts.type'), ['cifs', 'nfs'], true)) {
+                    if (! $isPullRequest && $isNetworkVolume) {
                         // Network volumes are used as written.
                         $volumesParsed->put($index, $volume);
 
                         continue;
+                    }
+                    if ($isPreviewOwnVolume) {
+                        $previewOwnVolumes->put($source->value(), true);
                     }
                     $slugWithoutUuid = Str::slug($source, '-');
                     $name = "{$uuid}_{$slugWithoutUuid}";
@@ -1509,7 +1514,9 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                             'resource_type' => get_class($originalResource),
                         ]
                     );
-                    $topLevel->get('volumes')->put($name, composeRenamedVolumeDeclarationFor($declaration, $name, $persistentVolume));
+                    $topLevel->get('volumes')->put($name, $isPreviewOwnVolume
+                        ? ['name' => $name]
+                        : composeRenamedVolumeDeclarationFor($declaration, $name, $persistentVolume, $isPullRequest));
                 }
                 dispatch(new ServerFilesFromServerJob($originalResource));
                 $volumesParsed->put($index, $volume);
@@ -2114,6 +2121,8 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
 
         $parsedServices->put($serviceName, $payload);
     }
+    // The preview mounts its own volumes instead of these external and network volumes (see above), so it does not declare them.
+    $topLevel->put('volumes', $topLevel->get('volumes')->except($previewOwnVolumes->keys()->all()));
     $topLevel->put('services', $parsedServices);
 
     $customOrder = ['services', 'volumes', 'networks', 'configs', 'secrets'];
@@ -2753,7 +2762,7 @@ function serviceParser(Service $resource): Collection
                     if ($source !== null && ! empty($source->value())) {
                         validateComposeArrayVolumeSource($source->value());
                     }
-                    validateComposeContentVolumeSource($volume, composeResourceDirectory($resource));
+                    validateComposeContentVolumeSource($volume);
                     if ($target !== null && ! empty($target->value())) {
                         try {
                             validateShellSafePath($target->value(), 'volume target');

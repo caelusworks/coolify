@@ -22,6 +22,7 @@ use App\Models\SwarmDocker;
 use App\Notifications\Application\DeploymentFailed;
 use App\Notifications\Application\DeploymentSuccess;
 use App\Support\RemoteSecretReferences;
+use App\Support\RemoteSecretValueFormatter;
 use App\Support\ValidationPatterns;
 use App\Traits\EnvironmentVariableAnalyzer;
 use App\Traits\ExecuteRemoteCommand;
@@ -153,6 +154,8 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
 
     /** @var array<string, string>|null */
     private ?array $remote_secrets_cache = null;
+
+    private ?bool $has_secret_manager_source = null;
 
     private $env_nixpacks_args;
 
@@ -293,7 +296,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                     $this->preview->generate_preview_fqdn();
                 }
             }
-            if ($this->application->is_github_based()) {
+            if ($this->application->isGithubAppSource()) {
                 ApplicationPullRequestUpdateJob::dispatch(application: $this->application, preview: $this->preview, deployment_uuid: $this->deployment_uuid, status: ProcessStatus::IN_PROGRESS);
             }
             if ($this->application->build_pack === 'dockerfile') {
@@ -383,7 +386,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             $this->detectBuildKitCapabilities();
             $this->decide_what_to_do();
         } catch (Exception $e) {
-            if ($this->pull_request_id !== 0 && $this->application->is_github_based()) {
+            if ($this->pull_request_id !== 0 && $this->application->isGithubAppSource()) {
                 ApplicationPullRequestUpdateJob::dispatch(application: $this->application, preview: $this->preview, deployment_uuid: $this->deployment_uuid, status: ProcessStatus::ERROR);
             }
             $this->fail($e);
@@ -465,7 +468,8 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             if ($mustBuildElsewhere && ! $this->restart_only) {
                 throw new DeploymentException("The deployment server ({$this->server->name}) is set to deployments only, and no usable build server was found. Add a build server or change the server role.");
             }
-            if (! $team->is_build_server_fallback_enabled) {
+            // A restart that has to rebuild selects again in should_skip_build().
+            if (! $team->is_build_server_fallback_enabled && ! $this->restart_only) {
                 throw new DeploymentException('No available dedicated build server was found. Enable a usable build server for this team or allow fallback to the deployment server in the team settings.');
             }
 
@@ -604,7 +608,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
         }
 
         if ($this->pull_request_id !== 0) {
-            if ($this->application->is_github_based()) {
+            if ($this->application->isGithubAppSource()) {
                 try {
                     ApplicationPullRequestUpdateJob::dispatch(application: $this->application, preview: $this->preview, deployment_uuid: $this->deployment_uuid, status: ProcessStatus::FINISHED);
                 } catch (Exception $e) {
@@ -642,6 +646,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
 
             return;
         }
+        $this->validateDeploymentEnvironmentVariableKeys(buildsImage: true);
 
         // Save build-time .env file BEFORE the build
         $this->save_buildtime_environment_variables();
@@ -675,7 +680,6 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             [
                 "docker pull {$image}",
                 'hidden' => true,
-                'ignore_errors' => true,
             ],
             [
                 "docker images -q {$image} 2>/dev/null",
@@ -789,6 +793,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
         }
         $this->generate_image_names();
         $this->cleanup_git();
+        $this->validateDeploymentEnvironmentVariableKeys(buildsImage: true);
 
         $this->generate_build_env_variables();
 
@@ -1105,6 +1110,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                 return;
             }
         }
+        $this->validateDeploymentEnvironmentVariableKeys(buildsImage: true);
         $this->cleanup_git();
         $this->generate_compose_file();
 
@@ -1138,6 +1144,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                 return;
             }
         }
+        $this->validateDeploymentEnvironmentVariableKeys(buildsImage: true);
         $this->clone_repository();
         $this->cleanup_git();
         $this->generate_nixpacks_confs();
@@ -1171,6 +1178,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                 return;
             }
         }
+        $this->validateDeploymentEnvironmentVariableKeys(buildsImage: true);
         $this->clone_repository();
         $this->cleanup_git();
         $this->generate_compose_file();
@@ -1202,6 +1210,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                 return;
             }
         }
+        $this->validateDeploymentEnvironmentVariableKeys(buildsImage: true);
         $this->clone_repository();
         $this->cleanup_git();
         $this->generate_compose_file();
@@ -1484,6 +1493,13 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
         }
         if ($this->restart_only) {
             $this->restart_only = false;
+            if (! $this->use_build_server) {
+                // The restart skipped build server selection.
+                $this->selectBuildServer();
+                if ($this->use_build_server) {
+                    $this->detectBuildKitCapabilities();
+                }
+            }
             $this->decide_what_to_do();
         }
 
@@ -1498,8 +1514,8 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
 
         return $environmentVariables
             ->where('is_buildtime', true)
-            ->get(['value'])
-            ->contains(fn (EnvironmentVariable $environmentVariable) => RemoteSecretReferences::containsReference($environmentVariable->value));
+            ->get(['value', 'is_literal'])
+            ->contains(fn (EnvironmentVariable $environmentVariable) => $this->uses_remote_secret_references($environmentVariable));
     }
 
     private function check_image_locally_or_remotely()
@@ -1555,6 +1571,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             throw new DeploymentException("Could not fetch secrets from {$provider}. The deployment was stopped so the application does not start with missing secrets.");
         }
 
+        $this->application_deployment_queue->redactRemoteSecrets($secrets);
         $this->application_deployment_queue->addLogEntry('Fetched '.count($secrets)." secrets from {$provider} ({$tokenName}, {$link->sourceSummary()}).");
 
         return $this->remote_secrets_cache = $secrets;
@@ -1610,7 +1627,29 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
     {
         $value = $env->get_real_environment_variables_with_server($env->value, $this->application, $this->mainServer);
 
+        if ($env->is_literal && ! $this->has_secret_manager_source()) {
+            return $value ?? '';
+        }
+
         return $this->substitute_remote_secrets($value ?? '', $env->key);
+    }
+
+    /**
+     * Without a source, a literal keeps "{{vault.KEY}}" as text; other references fail closed.
+     */
+    private function uses_remote_secret_references(EnvironmentVariable $env): bool
+    {
+        if (! RemoteSecretReferences::containsReference($env->value)) {
+            return false;
+        }
+
+        return ! $env->is_literal || $this->has_secret_manager_source();
+    }
+
+    private function has_secret_manager_source(): bool
+    {
+        return $this->has_secret_manager_source ??= $this->remote_secrets_cache !== null
+            || $this->application->secretManagerLink()->exists();
     }
 
     /**
@@ -1619,7 +1658,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
      */
     private function resolve_environment_variable(EnvironmentVariable $env): ?string
     {
-        if (! RemoteSecretReferences::containsReference($env->value)) {
+        if (! $this->uses_remote_secret_references($env)) {
             return $env->getResolvedValueWithServer($this->mainServer);
         }
 
@@ -1632,12 +1671,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
      */
     private function format_remote_secret_value(string $value): string
     {
-        if (! str_contains($value, "'")) {
-            return "'".$value."'";
-        }
-
-        // Fall back to double quotes; $$ escapes compose interpolation.
-        return '"'.str_replace(['\\', '"', '$'], ['\\\\', '\\"', '$$'], $value).'"';
+        return RemoteSecretValueFormatter::dotenv($value);
     }
 
     private function generate_runtime_environment_variables()
@@ -2060,7 +2094,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                     continue;
                 }
 
-                if (RemoteSecretReferences::containsReference($env->value)) {
+                if ($this->uses_remote_secret_references($env)) {
                     $envs_dict[$env->key] = escapeBashEnvValue($this->resolve_environment_variable_raw($env));
 
                     continue;
@@ -2118,7 +2152,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                     continue;
                 }
 
-                if (RemoteSecretReferences::containsReference($env->value)) {
+                if ($this->uses_remote_secret_references($env)) {
                     $envs_dict[$env->key] = escapeBashEnvValue($this->resolve_environment_variable_raw($env));
 
                     continue;
@@ -2237,7 +2271,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
      */
     private function ensureRegistryImageForMultipleServers(): void
     {
-        if ($this->pull_request_id !== 0) {
+        if ($this->pull_request_id !== 0 || $this->application->build_pack === 'dockercompose') {
             return;
         }
         if ($this->application->additional_servers()->doesntExist()) {
@@ -2252,24 +2286,29 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
 
     /**
      * Build-time names go into shell and Docker build commands, so they must be valid when the
-     * deployment builds an image. Runtime-only variables only go into the .env file: existing ones
-     * with names that new variables can no longer use (such as my-var) keep working, unless the
-     * name would break a .env line. Deployments without a build step (Docker image) treat
-     * build-time variables the same way, because no build receives them.
+     * deployment builds an image ($buildsImage, checked right before the build steps). Restarts and
+     * deployments that reuse an existing image do not pass them to a build, so handle() only warns.
+     * Runtime-only variables only go into the .env file: existing ones with names that new variables
+     * can no longer use (such as my-var) keep working, unless the name would break a .env line.
+     * Deployments without a build step (Docker image) never validate build-time names.
      */
-    private function validateDeploymentEnvironmentVariableKeys(): void
+    private function validateDeploymentEnvironmentVariableKeys(bool $buildsImage = false): void
     {
         $environmentVariables = $this->pull_request_id === 0
             ? $this->application->environment_variables()->get(['key', 'is_buildtime', 'is_runtime'])
             : $this->application->environment_variables_preview()->get(['key', 'is_buildtime', 'is_runtime']);
-        $passesBuildtimeVariables = $this->deploymentPassesBuildtimeVariables();
+        $validatesBuildtimeKeys = $buildsImage && $this->deploymentPassesBuildtimeVariables();
 
         foreach ($environmentVariables as $environmentVariable) {
             $key = (string) $environmentVariable->key;
             $isEnvFileSafe = $key !== '' && strpbrk($key, "=\n\r\0") === false;
-            if (($environmentVariable->is_buildtime && $passesBuildtimeVariables) || ! $isEnvFileSafe) {
+            if (($environmentVariable->is_buildtime && $validatesBuildtimeKeys) || ! $isEnvFileSafe) {
                 $this->validatedBuildtimeEnvironmentVariableKey($key, 'the deployment environment');
 
+                continue;
+            }
+            // The deployment start already logged the warnings.
+            if ($buildsImage) {
                 continue;
             }
             if (! ValidationPatterns::isValidEnvironmentVariableKey($key)) {
@@ -2297,7 +2336,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
         $displayKey = ValidationPatterns::displayShellEnvironmentVariableKey($key);
 
         if ($isBuildtime) {
-            $this->application_deployment_queue->addLogEntry("⚠️ Build-time variable {$displayKey} uses a name that new variables cannot use. This deployment does not build an image, so it is not used as a build-time variable. Rename it before you use it in a build.", 'stderr');
+            $this->application_deployment_queue->addLogEntry("⚠️ Build-time variable {$displayKey} uses a name that new variables cannot use. It is not used as a build-time variable unless the deployment builds an image, and that build fails until you rename it.", 'stderr');
         }
         if ($isRuntime) {
             $this->application_deployment_queue->addLogEntry("⚠️ Runtime variable {$displayKey} uses a name that new variables cannot use. It is still passed to the container, but shell scripts cannot read it.", 'stderr');
@@ -2637,6 +2676,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
         $this->check_git_if_build_needed();
         $this->clone_repository();
         $this->cleanup_git();
+        $this->validateDeploymentEnvironmentVariableKeys(buildsImage: true);
         if ($this->application->build_pack === 'nixpacks') {
             $this->generate_nixpacks_confs();
         }
@@ -2767,7 +2807,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
-     * @return int The number of deployments that Coolify queued on additional servers
+     * @return int The number of deployments that Coolify created on additional servers, including ones that failed to dispatch
      */
     private function deploy_to_additional_destinations(): int
     {
@@ -2799,18 +2839,29 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                 continue;
             }
             $deployment_uuid = new_public_id();
-            // Deploy the exact commit and image tag of the main server, also for a rollback.
-            $result = queue_application_deployment(
-                deployment_uuid: $deployment_uuid,
-                application: $this->application,
-                commit: $this->commit,
-                no_questions_asked: true,
-                server: $server,
-                destination: $destination,
-                rollback: $this->rollback,
-                docker_registry_image_tag: $this->application_deployment_queue->docker_registry_image_tag,
-                parent_deployment_uuid: $this->deployment_uuid,
-            );
+            try {
+                // Deploy the exact commit and image tag of the main server, also for a rollback.
+                $result = queue_application_deployment(
+                    deployment_uuid: $deployment_uuid,
+                    application: $this->application,
+                    commit: $this->commit,
+                    no_questions_asked: true,
+                    server: $server,
+                    destination: $destination,
+                    rollback: $this->rollback,
+                    docker_registry_image_tag: $this->application_deployment_queue->docker_registry_image_tag,
+                    parent_deployment_uuid: $this->deployment_uuid,
+                );
+            } catch (Throwable $e) {
+                \Log::warning("Deployment {$this->deployment_uuid} could not queue the deployment to {$server->name}: {$e->getMessage()}");
+                $this->application_deployment_queue->addLogEntry("Deployment to {$server->name} could not be started: {$e->getMessage()}", 'stderr');
+                // A deployment that failed to dispatch is already failed; it counts for the combined notification.
+                if (ApplicationDeploymentQueue::query()->where('deployment_uuid', $deployment_uuid)->exists()) {
+                    $queued++;
+                }
+
+                continue;
+            }
             if ($result['status'] !== 'queued') {
                 $this->application_deployment_queue->addLogEntry("Deployment to {$server->name} was not queued: {$result['message']}", 'stderr');
 
@@ -3224,7 +3275,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
 
     private function normalize_resolved_build_variable_value(EnvironmentVariable $environmentVariable): ?string
     {
-        if (RemoteSecretReferences::containsReference($environmentVariable->value)) {
+        if ($this->uses_remote_secret_references($environmentVariable)) {
             $resolved = $this->resolve_environment_variable_raw($environmentVariable);
 
             return $resolved === '' ? null : $resolved;
@@ -3777,7 +3828,7 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
             }
 
             foreach ($envs as $env) {
-                $resolvedValue = RemoteSecretReferences::containsReference($env->value)
+                $resolvedValue = $this->uses_remote_secret_references($env)
                     ? $this->resolve_environment_variable_raw($env)
                     : $env->getResolvedValueWithServer($this->mainServer);
                 if (! is_null($resolvedValue)) {
@@ -3795,7 +3846,7 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
             }
 
             foreach ($envs as $env) {
-                $resolvedValue = RemoteSecretReferences::containsReference($env->value)
+                $resolvedValue = $this->uses_remote_secret_references($env)
                     ? $this->resolve_environment_variable_raw($env)
                     : $env->getResolvedValueWithServer($this->mainServer);
                 if (! is_null($resolvedValue)) {
@@ -4157,9 +4208,22 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
         return $default;
     }
 
+    /**
+     * Older versions accepted any static image through the API, so a stored value can be one that
+     * Coolify no longer supports. Such a value stops the deployment with a clear error instead of
+     * silently building with another web server image.
+     */
     private function staticImage(): string
     {
-        return StaticImageTypes::from($this->application->static_image)->value;
+        $image = StaticImageTypes::tryFrom((string) $this->application->static_image);
+
+        if ($image === null) {
+            $supported = implode(', ', array_column(StaticImageTypes::cases(), 'value'));
+
+            throw new DeploymentException("The static image '{$this->application->static_image}' is not supported. Select a supported web server ({$supported}) in the application settings and deploy again.");
+        }
+
+        return $image->value;
     }
 
     private function pull_latest_image(string $image): void
@@ -4691,6 +4755,7 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
             // Ensure .env file exists before docker compose tries to load it (defensive programming)
             $this->execute_remote_command(
                 ["touch {$this->configuration_dir}/.env", 'hidden' => true],
+                [$this->destination->proxyConnectCommand(), 'hidden' => true, 'ignore_errors' => true],
             );
 
             if ($this->application->build_pack === 'dockerimage') {
@@ -4833,7 +4898,9 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
             $this->generate_env_variables();
         }
 
-        $variables = $this->env_args;
+        // Invalid names stay out of the helper container: a build fails on them before it starts,
+        // and restarts or deployments that reuse an image do not need them.
+        $variables = $this->env_args->filter(fn ($value, $key): bool => ValidationPatterns::isValidEnvironmentVariableKey((string) $key));
 
         if ($this->build_pack === 'railpack') {
             $variables = $this->without_reserved_docker_client_variables($variables);
@@ -5625,7 +5692,7 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
         }
 
         try {
-            queue_next_deployment($this->application);
+            queue_next_deployment($this->application, $this->application_deployment_queue->server_id);
         } catch (Throwable $e) {
             $this->logStatusTransitionSideEffectFailure('Starting the next queued deployment failed', $e);
         }

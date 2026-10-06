@@ -15,7 +15,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Process;
-use Illuminate\Support\Str;
 use Spatie\Activitylog\Contracts\Activity;
 
 function remote_process(
@@ -28,6 +27,8 @@ function remote_process(
     $callEventOnFinish = null,
     $callEventData = null,
     array $properties = [],
+    ?int $timeout = null,
+    string $queue = 'high',
 ): Activity {
     $type = $type ?? ActivityTypes::INLINE->value;
     $command = $command instanceof Collection ? $command->toArray() : $command;
@@ -72,6 +73,8 @@ function remote_process(
         ignore_errors: $ignore_errors,
         call_event_on_finish: $callEventOnFinish,
         call_event_data: $callEventData,
+        timeout: $timeout,
+        queue: $queue,
     ));
 
     $activity->refresh();
@@ -129,6 +132,34 @@ function instant_scp_from_server(string $remoteSource, string $localDest, Server
             'source' => $remoteSource,
             'dest' => $localDest,
             'function' => 'instant_scp_from_server',
+        ],
+        $throwError
+    );
+}
+
+/**
+ * Write content to a file on a server through SSH stdin. The content never becomes part of a command
+ * line, so it is not limited by the 128 KiB per-argument limit of Linux. A non-root SSH user writes
+ * with `sudo tee` because Coolify directories such as /data/coolify are root-only.
+ */
+function instant_remote_write_file(Server $server, string $path, string $content, bool $throwError = true): void
+{
+    $remoteCommand = ($server->isNonRoot() ? 'sudo ' : '').'tee '.escapeshellarg($path).' > /dev/null';
+    $timeout = (int) config('constants.ssh.command_timeout');
+
+    SshRetryHandler::retry(
+        function () use ($server, $remoteCommand, $content, $timeout) {
+            $sshCommand = SshMultiplexingHelper::generateSshStdinCommand($server, $remoteCommand, commandTimeout: $timeout);
+            $process = Process::timeout($timeout)->input($content)->run($sshCommand);
+
+            if ($process->exitCode() !== 0) {
+                excludeCertainErrors($process->errorOutput(), $process->exitCode());
+            }
+        },
+        [
+            'server' => $server->ip,
+            'dest' => $path,
+            'function' => 'instant_remote_write_file',
         ],
         $throwError
     );
@@ -204,24 +235,17 @@ function instant_remote_process(Collection|array $command, Server $server, bool 
     );
 }
 
-function excludeCertainErrors(string $errorOutput, ?int $exitCode = null)
+/**
+ * Throws the remote command error. Handler::register() never sends RuntimeException to Sentry,
+ * so SSH key, DNS, and timeout failures on user servers are not reported.
+ */
+function excludeCertainErrors(string $errorOutput, ?int $exitCode = null): never
 {
-    $ignoredErrors = collect([
-        'Permission denied (publickey',
-        'Could not resolve hostname',
-    ]);
-    $ignored = $ignoredErrors->contains(fn ($error) => Str::contains($errorOutput, $error));
-
-    // Ensure we always have a meaningful error message
     $errorMessage = trim($errorOutput);
     if (empty($errorMessage)) {
         $errorMessage = "SSH command failed with exit code: $exitCode";
     }
 
-    if ($ignored) {
-        // TODO: Create new exception and disable in sentry
-        throw new RuntimeException($errorMessage, $exitCode);
-    }
     throw new RuntimeException($errorMessage, $exitCode);
 }
 
@@ -235,8 +259,11 @@ function decode_remote_command_output(?ApplicationDeploymentQueue $application_d
     $serverTimezone = getServerTimezone(data_get($application, 'destination.server'));
 
     // Members should never see debug logs, even if an admin enabled debug mode
-    if ($is_debug_enabled && auth()->check() && auth()->user()->isMember()) {
-        $is_debug_enabled = false;
+    if ($is_debug_enabled && auth()->check()) {
+        $teamId = $application?->team()?->id;
+        if (is_null($teamId) || ! auth()->user()->isAdminOfTeam($teamId)) {
+            $is_debug_enabled = false;
+        }
     }
 
     $logs = data_get($application_deployment_queue, 'logs');

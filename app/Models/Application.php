@@ -652,6 +652,11 @@ class Application extends BaseModel
         return false;
     }
 
+    public function isGithubAppSource(): bool
+    {
+        return $this->source instanceof GithubApp;
+    }
+
     public function isForceHttpsEnabled()
     {
         return data_get($this, 'settings.is_force_https_enabled', false);
@@ -2331,7 +2336,7 @@ class Application extends BaseModel
         }
         if ($composeFileContent) {
             try {
-                validateDockerComposeForInjection($composeFileContent, composeResourceDirectory($this));
+                validateDockerComposeForInjection($composeFileContent);
             } catch (\Exception $e) {
                 $this->docker_compose_location = $initialDockerComposeLocation;
                 $this->base_directory = $initialBaseDirectory;

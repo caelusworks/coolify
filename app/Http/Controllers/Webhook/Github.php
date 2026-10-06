@@ -17,6 +17,8 @@ use App\Models\GithubApp;
 use App\Models\GithubRunnerConfig;
 use App\Models\GithubRunnerExecution;
 use App\Models\PrivateKey;
+use App\Services\GithubRunner\GithubRunnerApi;
+use App\Services\GithubRunner\GithubRunnerContainer;
 use Exception;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\RedirectResponse;
@@ -270,6 +272,11 @@ class Github extends Controller
         if ($jobId <= 0) {
             return response('Nothing to do. No workflow job found.');
         }
+        // A public App can be installed by other accounts; only its own installation may use the runners.
+        $installationId = data_get($payload, 'installation.id');
+        if (blank($githubApp->installation_id) || ! is_numeric($installationId) || (int) $installationId !== (int) $githubApp->installation_id) {
+            return response('Nothing to do. The job belongs to another installation of the GitHub App.');
+        }
 
         $jobDetails = array_filter([
             'workflow_job_id' => $jobId,
@@ -281,17 +288,22 @@ class Github extends Controller
 
         if ($action === 'queued') {
             $labels = array_values(array_filter((array) data_get($payload, 'workflow_job.labels', []), 'is_string'));
-            $matches = $githubApp->runnerConfigs()
+            $matchingConfigs = $githubApp->runnerConfigs()
                 ->where('is_enabled', true)
                 ->get()
-                ->contains(fn (GithubRunnerConfig $config) => $config->matchesLabels($labels));
-            if (! $matches) {
+                ->filter(fn (GithubRunnerConfig $config) => $config->matchesLabels($labels));
+            if ($matchingConfigs->isEmpty()) {
                 return response('Nothing to do. No runner configuration matches the job labels.');
+            }
+            $isPullRequest = $matchingConfigs->contains(fn (GithubRunnerConfig $config) => ! $config->allow_pull_requests)
+                && $this->isPullRequestWorkflowJob($githubApp, $payload);
+            if ($isPullRequest && ! $matchingConfigs->contains('allow_pull_requests', true)) {
+                return response('Nothing to do. The runner configuration does not allow pull request jobs.');
             }
 
             $execution = GithubRunnerExecution::createOrFirst(
                 ['github_app_id' => $githubApp->id, 'trigger_workflow_job_id' => $jobId],
-                [...$jobDetails, 'labels' => $labels, 'status' => GithubRunnerStatus::Queued, 'queued_at' => now()],
+                [...$jobDetails, 'labels' => $labels, 'is_pull_request' => $isPullRequest, 'status' => GithubRunnerStatus::Queued, 'queued_at' => now()],
             );
             if ($execution->wasRecentlyCreated) {
                 ProvisionGithubRunnerJob::dispatch($execution->id);
@@ -304,10 +316,15 @@ class Github extends Controller
             ? GithubRunnerExecution::query()->where('github_app_id', $githubApp->id)->where('runner_name', $runnerName)->first()
             : null;
 
-        if ($action === 'in_progress' && $execution && in_array($execution->status, [GithubRunnerStatus::Provisioning, GithubRunnerStatus::Idle], true)) {
-            $execution->update([...$jobDetails, 'status' => GithubRunnerStatus::Running, 'started_at' => now()]);
-
-            return response('Runner marked running.');
+        // The completed hook can arrive before the in_progress hook.
+        if (in_array($action, ['in_progress', 'completed'], true) && $execution && in_array($execution->status, [GithubRunnerStatus::Provisioning, GithubRunnerStatus::Idle], true)) {
+            $replacement = $execution->assignJob($jobId, $jobDetails);
+            if ($replacement) {
+                ProvisionGithubRunnerJob::dispatch($replacement->id);
+            }
+            if ($action === 'in_progress') {
+                return response('Runner marked running.');
+            }
         }
 
         if ($action === 'completed') {
@@ -333,6 +350,29 @@ class Github extends Controller
         }
 
         return response('Nothing to do.');
+    }
+
+    /**
+     * Whether a queued job belongs to a workflow run started by a pull request, so no runner is started
+     * for a job that the job-started hook would refuse. The `workflow_job` payload has no event, so the
+     * run is read from GitHub. When that fails, the job counts as no pull request job and the hook still
+     * refuses it in the runner.
+     */
+    private function isPullRequestWorkflowJob(GithubApp $githubApp, Collection $payload): bool
+    {
+        $runId = (int) data_get($payload, 'workflow_job.run_id', 0);
+        $repository = (string) data_get($payload, 'repository.full_name', '');
+        if ($runId <= 0 || ! str_contains($repository, '/')) {
+            return false;
+        }
+
+        try {
+            $event = (new GithubRunnerApi($githubApp))->workflowRunEvent($repository, $runId);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return in_array($event, GithubRunnerContainer::PULL_REQUEST_EVENTS, true);
     }
 
     public function normal(Request $request)

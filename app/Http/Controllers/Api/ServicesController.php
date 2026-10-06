@@ -31,6 +31,7 @@ use Symfony\Component\Yaml\Yaml;
 class ServicesController extends Controller
 {
     use Concerns\HandlesTagsApi;
+    use Concerns\RequiresDeployForOutsideHostPaths;
 
     protected function findTaggableResource(string $uuid, int|string $teamId): mixed
     {
@@ -272,13 +273,13 @@ class ServicesController extends Controller
             : [];
 
         foreach ($projects as $project) {
-            $services->push($project->services()->with($serviceRelations)->get());
-        }
-        foreach ($services as $service) {
-            $service = $this->removeSensitiveData($service);
+            $services = $services->merge(
+                $project->services()->with($serviceRelations)->get()
+                    ->map(fn (Service $service) => $this->removeSensitiveData($service))
+            );
         }
 
-        return response()->json($services->flatten());
+        return response()->json($services->values());
     }
 
     #[OA\Post(
@@ -507,6 +508,9 @@ class ServicesController extends Controller
             }
         }
         $services = get_service_templates();
+        if (filled($request->type)) {
+            $request->offsetSet('type', resolve_service_template_key($request->type, $services));
+        }
         $serviceKeys = $services->keys();
         if ($serviceKeys->contains($request->type)) {
             $oneClickServiceName = $request->type;
@@ -1002,7 +1006,7 @@ class ServicesController extends Controller
             new OA\Parameter(name: 'uuid', in: 'path', required: true, description: 'Service UUID', schema: new OA\Schema(type: 'string')),
             new OA\Parameter(name: 'delete_configurations', in: 'query', required: false, description: 'Delete configurations.', schema: new OA\Schema(type: 'boolean', default: true)),
             new OA\Parameter(name: 'delete_volumes', in: 'query', required: false, description: 'Delete volumes.', schema: new OA\Schema(type: 'boolean', default: true)),
-            new OA\Parameter(name: 'docker_cleanup', in: 'query', required: false, description: 'Run docker cleanup.', schema: new OA\Schema(type: 'boolean', default: true)),
+            new OA\Parameter(name: 'docker_cleanup', in: 'query', required: false, description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.', schema: new OA\Schema(type: 'boolean', default: true)),
             new OA\Parameter(name: 'delete_connected_networks', in: 'query', required: false, description: 'Delete connected networks.', schema: new OA\Schema(type: 'boolean', default: true)),
             new OA\Parameter(name: 'delete_from_coolify_only', in: 'query', required: false, description: 'Remove only Coolify metadata without deleting Docker resources.', schema: new OA\Schema(type: 'boolean', default: false)),
         ],
@@ -1054,7 +1058,8 @@ class ServicesController extends Controller
 
         $service->delete();
 
-        $deleteFromCoolifyOnly = $request->boolean('delete_from_coolify_only') || ! $service->server?->isFunctional();
+        $deleteFromCoolifyOnlyRequested = $request->boolean('delete_from_coolify_only');
+        $deleteFromCoolifyOnly = $deleteFromCoolifyOnlyRequested || ! $service->server?->isFunctional();
 
         DeleteResourceJob::dispatch(
             resource: $service,
@@ -1072,11 +1077,13 @@ class ServicesController extends Controller
             'delete_from_coolify_only' => $deleteFromCoolifyOnly,
         ]);
 
-        return response()->json([
-            'message' => $deleteFromCoolifyOnly
-                ? 'Server is not reachable. The service will be removed from Coolify only; Docker resources may remain.'
-                : 'Service deletion request queued.',
-        ]);
+        $message = match (true) {
+            $deleteFromCoolifyOnlyRequested => 'The service will be removed from Coolify only; Docker resources will remain.',
+            $deleteFromCoolifyOnly => 'Server is not reachable. The service will be removed from Coolify only; Docker resources may remain.',
+            default => 'Service deletion request queued.',
+        };
+
+        return response()->json(['message' => $message]);
     }
 
     #[OA\Patch(
@@ -1275,7 +1282,7 @@ class ServicesController extends Controller
 
             // Validate for command injection BEFORE saving to database
             try {
-                validateDockerComposeForInjection($dockerComposeRaw, composeResourceDirectory($service));
+                validateDockerComposeForInjection($dockerComposeRaw);
             } catch (\Exception $e) {
                 return response()->json([
                     'message' => 'Validation failed.',
@@ -2178,7 +2185,7 @@ class ServicesController extends Controller
             new OA\Parameter(
                 name: 'docker_cleanup',
                 in: 'query',
-                description: 'Perform docker cleanup (prune networks, volumes, etc.).',
+                description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.',
                 schema: new OA\Schema(
                     type: 'boolean',
                     default: true,
@@ -2470,7 +2477,7 @@ class ServicesController extends Controller
                             'mount_path' => ['type' => 'string', 'description' => 'The container mount path.'],
                             'content' => ['type' => 'string', 'nullable' => true, 'description' => 'File content (file only, optional).'],
                             'is_directory' => ['type' => 'boolean', 'description' => 'Whether this is a directory mount (file only, default false).'],
-                            'fs_path' => ['type' => 'string', 'description' => 'Host directory path (required when is_directory is true).'],
+                            'fs_path' => ['type' => 'string', 'description' => 'Host path. Required for directory mounts and host file mounts. Optional for file mounts with content (default: inside the resource directory). An absolute path can be anywhere on the host; a relative path is inside the resource directory. A directory or file mount outside the resource directory needs a token with the deploy permission. Coolify never deletes a path outside the resource directory.'],
                         ],
                         additionalProperties: false,
                     ),
@@ -2486,6 +2493,7 @@ class ServicesController extends Controller
             new OA\Response(response: 401, ref: '#/components/responses/401'),
             new OA\Response(response: 400, ref: '#/components/responses/400'),
             new OA\Response(response: 404, ref: '#/components/responses/404'),
+            new OA\Response(response: 403, description: 'The token needs the deploy permission for a mount outside the resource directory.'),
             new OA\Response(response: 422, ref: '#/components/responses/422'),
         ]
     )]
@@ -2599,9 +2607,18 @@ class ServicesController extends Controller
             }
 
             try {
-                $fsPath = confinePathToBase(service_configuration_dir().'/'.$service->uuid, $request->fs_path, 'storage source path');
+                $fsPath = LocalFileVolume::resolveHostPath(service_configuration_dir().'/'.$service->uuid, $request->fs_path, 'storage source path');
                 $mountPath = validateFileMountPath($request->mount_path, 'storage destination path');
-                LocalFileVolume::assertRemotePathIsConfined($service->workdir(), $fsPath, $service->server);
+                $forbidden = $this->outsideHostPathForbiddenResponse($request, new LocalFileVolume([
+                    'fs_path' => $fsPath,
+                    'is_directory' => true,
+                    'resource_id' => $subResource->id,
+                    'resource_type' => get_class($subResource),
+                ]));
+                if ($forbidden) {
+                    return $forbidden;
+                }
+                LocalFileVolume::assertHostPathOnServer(service_configuration_dir().'/'.$service->uuid, $fsPath, $service->server, isDirectory: true);
             } catch (\Throwable $e) {
                 return response()->json([
                     'message' => 'Validation failed.',
@@ -2653,11 +2670,32 @@ class ServicesController extends Controller
         } else {
             try {
                 $mountPath = validateFileMountPath($request->mount_path, 'file storage path');
-                $fsPath = confineFileMountPath(service_configuration_dir().'/'.$service->uuid, $mountPath, 'file storage path');
             } catch (\Throwable $e) {
                 return response()->json([
                     'message' => 'Validation failed.',
                     'errors' => ['mount_path' => $e->getMessage()],
+                ], 422);
+            }
+
+            try {
+                if ($request->filled('fs_path')) {
+                    $fsPath = LocalFileVolume::resolveHostPath(service_configuration_dir().'/'.$service->uuid, $request->fs_path, 'file storage source path');
+                    $forbidden = $this->outsideHostPathForbiddenResponse($request, new LocalFileVolume([
+                        'fs_path' => $fsPath,
+                        'resource_id' => $subResource->id,
+                        'resource_type' => get_class($subResource),
+                    ]));
+                    if ($forbidden) {
+                        return $forbidden;
+                    }
+                    LocalFileVolume::assertHostPathOnServer(service_configuration_dir().'/'.$service->uuid, $fsPath, $service->server, isDirectory: false);
+                } else {
+                    $fsPath = confineFileMountPath(service_configuration_dir().'/'.$service->uuid, $mountPath, 'file storage path');
+                }
+            } catch (\Throwable $e) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => [$request->filled('fs_path') ? 'fs_path' : 'mount_path' => $e->getMessage()],
                 ], 422);
             }
 
@@ -2719,7 +2757,7 @@ class ServicesController extends Controller
                             'is_preview_suffix_enabled' => ['type' => 'boolean', 'description' => 'Whether to add -pr-N suffix for preview deployments.'],
                             'name' => ['type' => 'string', 'description' => 'The volume name (persistent only, not allowed for read-only storages).'],
                             'mount_path' => ['type' => 'string', 'description' => 'The container mount path (not allowed for read-only storages).'],
-                            'content' => ['type' => 'string', 'nullable' => true, 'description' => 'The file content (file only, not allowed for read-only storages).'],
+                            'content' => ['type' => 'string', 'nullable' => true, 'description' => 'The file content (file only, not allowed for read-only storages). Changing the content of a file outside the resource directory needs the deploy permission.'],
                         ],
                         additionalProperties: false,
                     ),
@@ -2743,6 +2781,10 @@ class ServicesController extends Controller
             new OA\Response(
                 response: 404,
                 ref: '#/components/responses/404',
+            ),
+            new OA\Response(
+                response: 403,
+                description: 'The token needs the deploy permission to change the content of a file outside the resource directory.',
             ),
             new OA\Response(
                 response: 422,
@@ -2875,6 +2917,10 @@ class ServicesController extends Controller
                         ->mapWithKeys(fn ($field) => [$field => "Field '{$field}' is not valid for type '{$request->type}'."]),
                 ], 422);
             }
+        }
+
+        if (! $isReadOnly && ($forbidden = $this->outsideContentChangeForbiddenResponse($request, $storage))) {
+            return $forbidden;
         }
 
         // Always allowed

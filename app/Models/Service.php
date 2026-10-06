@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Services\ContainerStatusAggregator;
+use App\Services\DockerImageParser;
 use App\Support\DomainPortOverrides;
 use App\Support\ResourceStartActivity;
 use App\Traits\Auditable;
@@ -642,7 +643,7 @@ class Service extends BaseModel
                     }
                     $fields->put('Unleash', $data->toArray());
                     break;
-                case $this->isGrafanaImage($image->toString()):
+                case $this->isGrafanaServerImage($application->image):
                     $data = collect([]);
                     $admin_password = $this->environment_variables()->where('key', 'SERVICE_PASSWORD_GRAFANA')->first();
                     $data = $data->merge([
@@ -1417,8 +1418,22 @@ class Service extends BaseModel
         return $fields;
     }
 
-    private function isGrafanaImage(string $image): bool
+    /**
+     * Determine whether the given image is an actual Grafana server image
+     * (grafana/grafana, grafana/grafana-oss, grafana/grafana-enterprise),
+     * optionally prefixed by a registry host. Other Grafana-published images
+     * such as grafana/loki, grafana/promtail and grafana/tempo are excluded.
+     */
+    private function isGrafanaServerImage(string $image): bool
     {
+        $parsedImage = (new DockerImageParser)->parse($image);
+        $image = $parsedImage->getImageName();
+
+        // The parser recognizes registry hosts with dots or ports, but not bare localhost.
+        if ($parsedImage->getRegistryUrl() === '' && str_starts_with($image, 'localhost/')) {
+            $image = substr($image, strlen('localhost/'));
+        }
+
         return in_array($image, [
             'grafana/grafana',
             'grafana/grafana-oss',
@@ -1463,7 +1478,7 @@ class Service extends BaseModel
     public function documentation()
     {
         $services = get_service_templates();
-        $service = data_get($services, str($this->name)->beforeLast('-')->value, []);
+        $service = data_get($services, resolve_service_template_key(str($this->name)->beforeLast('-')->value, $services), []);
 
         return data_get($service, 'documentation', config('constants.urls.docs'));
     }
@@ -1478,7 +1493,7 @@ class Service extends BaseModel
             if (blank($this->service_type)) {
                 return null;
             }
-            $serviceName = $this->service_type;
+            $serviceName = resolve_service_template_key($this->service_type, $services);
             $service = data_get($services, $serviceName, []);
             $port = data_get($service, 'port');
 
@@ -1573,10 +1588,9 @@ class Service extends BaseModel
 
         $workdir = $this->workdir();
         // Absolute paths and tee, no cd or scp: a non-root SSH user cannot enter /data/coolify on the Coolify host.
-        $commands = [
-            "mkdir -p $workdir",
-            "echo '".base64_encode($this->docker_compose)."' | base64 -d | tee $workdir/docker-compose.yml > /dev/null",
-        ];
+        // File content goes over SSH stdin: inline in the command, a compose over ~96 KB exceeds the argument limit.
+        instant_remote_process(["mkdir -p $workdir"], $this->server);
+        instant_remote_write_file($this->server, "$workdir/docker-compose.yml", $this->docker_compose);
         $environmentFile = "$workdir/".new_public_id().'.env.tmp';
 
         $envs = collect([]);
@@ -1605,17 +1619,10 @@ class Service extends BaseModel
             return 3;
         });
         foreach ($sorted as $env) {
-            $envs->push("{$env->key}={$this->resolveSecretManagerEnvironmentVariable($env)}");
+            $envs->push("{$env->key}={$this->resolveSecretManagerDotenvValue($env)}");
         }
-        if ($envs->count() === 0) {
-            $commands[] = "touch {$environmentFile}";
-        } else {
-            $envs_base64 = base64_encode($envs->implode("\n"));
-            $commands[] = "echo '$envs_base64' | base64 -d | tee {$environmentFile} > /dev/null";
-        }
-        $commands[] = "mv {$environmentFile} $workdir/.env";
-
-        instant_remote_process($commands, $this->server);
+        instant_remote_write_file($this->server, $environmentFile, $envs->implode("\n"));
+        instant_remote_process(["mv {$environmentFile} $workdir/.env"], $this->server);
     }
 
     public function parse(bool $isNew = false): Collection

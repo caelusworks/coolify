@@ -7,6 +7,242 @@ servers:
     url: 'https://app.coolify.io/api/v1'
     description: 'Coolify Cloud API. Change the host to your own instance if you are self-hosting.'
 paths:
+  '/applications/{uuid}/previews':
+    get:
+      tags:
+        - Applications
+      summary: 'List Preview Deployments'
+      description: 'List the preview deployments of an application, newest pull request first.'
+      operationId: list-preview-deployments-by-application-uuid
+      parameters:
+        -
+          name: uuid
+          in: path
+          description: 'UUID of the application.'
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'List of preview deployments.'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApplicationPreview'
+        '401':
+          $ref: '#/components/responses/401'
+        '404':
+          $ref: '#/components/responses/404'
+      security:
+        -
+          bearerAuth: []
+    post:
+      tags:
+        - Applications
+      summary: 'Create Preview Deployment'
+      description: 'Open a preview deployment for a pull request and queue its deployment. When the preview already exists, it is redeployed. Git based applications need git_type unless they use a GitHub or GitLab App source; Bitbucket also needs commit. Docker Image applications need docker_tag for a new preview.'
+      operationId: create-preview-deployment-by-application-uuid
+      parameters:
+        -
+          name: uuid
+          in: path
+          description: 'UUID of the application.'
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - pull_request_id
+              properties:
+                pull_request_id:
+                  type: integer
+                  maximum: 2147483647
+                  minimum: 1
+                  example: 42
+                pull_request_html_url:
+                  type: [string, 'null']
+                  example: 'https://github.com/org/repo/pull/42'
+                git_type:
+                  description: 'Git provider that hosts the pull request. Sets the ref Coolify fetches (pull/{id}/head or merge-requests/{id}/head).'
+                  type: [string, 'null']
+                  enum: [github, gitlab, gitea, bitbucket]
+                commit:
+                  description: 'Commit SHA to deploy. Required for Bitbucket.'
+                  type: [string, 'null']
+                docker_tag:
+                  description: 'Docker image tag. Docker Image applications only.'
+                  type: [string, 'null']
+                force:
+                  description: 'Rebuild without cache.'
+                  type: boolean
+                  default: false
+                instant_deploy:
+                  description: 'Queue a deployment. Set to false to only create the preview, for example to set its domains first.'
+                  type: boolean
+                  default: true
+              type: object
+      responses:
+        '200':
+          description: 'Existing preview deployment updated.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationPreviewDeployment'
+        '201':
+          description: 'Preview deployment created.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationPreviewDeployment'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '429':
+          description: 'Deployment queue is full.'
+      security:
+        -
+          bearerAuth: []
+  '/applications/{uuid}/previews/{pull_request_id}':
+    get:
+      tags:
+        - Applications
+      summary: 'Get Preview Deployment'
+      description: 'Get a preview deployment by pull request ID.'
+      operationId: get-preview-deployment-by-pull-request-id
+      parameters:
+        -
+          name: uuid
+          in: path
+          description: 'UUID of the application.'
+          required: true
+          schema:
+            type: string
+        -
+          name: pull_request_id
+          in: path
+          description: 'Pull request ID of the preview.'
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 'Preview deployment.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationPreview'
+        '401':
+          $ref: '#/components/responses/401'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+      security:
+        -
+          bearerAuth: []
+    delete:
+      tags:
+        - Applications
+      summary: 'Delete Preview Deployment'
+      description: 'Delete a preview deployment for a pull request. Cancels active deployments, stops containers, removes volumes/networks, and deletes the preview record.'
+      operationId: delete-preview-deployment-by-pull-request-id
+      parameters:
+        -
+          name: uuid
+          in: path
+          description: 'UUID of the application.'
+          required: true
+          schema:
+            type: string
+        -
+          name: pull_request_id
+          in: path
+          description: 'Pull request ID of the preview to delete.'
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 'Preview deletion queued.'
+          content:
+            application/json:
+              schema:
+                properties:
+                  message: { type: string }
+                type: object
+        '401':
+          $ref: '#/components/responses/401'
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+      security:
+        -
+          bearerAuth: []
+    patch:
+      tags:
+        - Applications
+      summary: 'Update Preview Domains'
+      description: 'Replace domains for a preview deployment. Use domains for regular applications or docker_compose_domains for Docker Compose applications. Ports are stored as internal overrides while public domains remain portless.'
+      operationId: update-preview-domains-by-pull-request-id
+      parameters:
+        -
+          name: uuid
+          in: path
+          required: true
+          schema:
+            type: string
+        -
+          name: pull_request_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              properties:
+                domains:
+                  type: [string, 'null']
+                  example: 'https://pr.example.com:3000'
+                docker_compose_domains:
+                  type: [array, 'null']
+                  items: { properties: { name: { type: string }, domain: { type: [string, 'null'] }, redirect: { type: [string, 'null'], enum: [www, non-www, both] } }, type: object }
+                force_domain_override:
+                  type: boolean
+                  default: false
+              type: object
+      responses:
+        '200':
+          description: 'Preview domains updated.'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '409':
+          description: 'Domain conflict.'
+        '422':
+          $ref: '#/components/responses/422'
+      security:
+        -
+          bearerAuth: []
   '/applications/{uuid}/secret-manager':
     patch:
       tags:
@@ -387,7 +623,7 @@ paths:
                 custom_internal_name:
                   type: string
                   nullable: true
-                  description: 'Custom internal container name.'
+                  description: 'Custom internal container name. Turns is_consistent_container_name_enabled on when that field is not sent; sending it as false together with a name returns 422.'
                 custom_container_name_prefix:
                   type: string
                   nullable: true
@@ -773,7 +1009,7 @@ paths:
                 custom_internal_name:
                   type: string
                   nullable: true
-                  description: 'Custom internal container name.'
+                  description: 'Custom internal container name. Turns is_consistent_container_name_enabled on when that field is not sent; sending it as false together with a name returns 422.'
                 custom_container_name_prefix:
                   type: string
                   nullable: true
@@ -1159,7 +1395,7 @@ paths:
                 custom_internal_name:
                   type: string
                   nullable: true
-                  description: 'Custom internal container name.'
+                  description: 'Custom internal container name. Turns is_consistent_container_name_enabled on when that field is not sent; sending it as false together with a name returns 422.'
                 custom_container_name_prefix:
                   type: string
                   nullable: true
@@ -1486,7 +1722,7 @@ paths:
                 custom_internal_name:
                   type: string
                   nullable: true
-                  description: 'Custom internal container name.'
+                  description: 'Custom internal container name. Turns is_consistent_container_name_enabled on when that field is not sent; sending it as false together with a name returns 422.'
                 custom_container_name_prefix:
                   type: string
                   nullable: true
@@ -1799,7 +2035,7 @@ paths:
                 custom_internal_name:
                   type: string
                   nullable: true
-                  description: 'Custom internal container name.'
+                  description: 'Custom internal container name. Turns is_consistent_container_name_enabled on when that field is not sent; sending it as false together with a name returns 422.'
                 custom_container_name_prefix:
                   type: string
                   nullable: true
@@ -1931,7 +2167,7 @@ paths:
         -
           name: docker_cleanup
           in: query
-          description: 'Run docker cleanup.'
+          description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.'
           required: false
           schema:
             type: boolean
@@ -2266,7 +2502,7 @@ paths:
                 custom_internal_name:
                   type: string
                   nullable: true
-                  description: 'Custom internal container name.'
+                  description: 'Custom internal container name. Turns is_consistent_container_name_enabled on when that field is not sent; sending it as false together with a name returns 422.'
                 custom_container_name_prefix:
                   type: string
                   nullable: true
@@ -2360,6 +2596,13 @@ paths:
           schema:
             type: boolean
             default: false
+        -
+          name: service_name
+          in: query
+          description: 'Return logs only from the container of the Docker Compose service with this name. Returns 404 when no running container matches.'
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: 'Get application logs by UUID.'
@@ -2426,6 +2669,13 @@ paths:
           schema:
             type: boolean
             default: false
+        -
+          name: service_name
+          in: query
+          description: 'Return logs only from the container of the Docker Compose service with this name. Returns 404 when no running container matches.'
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: 'Preview runtime logs.'
@@ -2441,99 +2691,6 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
-        '422':
-          $ref: '#/components/responses/422'
-      security:
-        -
-          bearerAuth: []
-  '/applications/{uuid}/previews/{pull_request_id}':
-    delete:
-      tags:
-        - Applications
-      summary: 'Delete Preview Deployment'
-      description: 'Delete a preview deployment for a pull request. Cancels active deployments, stops containers, removes volumes/networks, and deletes the preview record.'
-      operationId: delete-preview-deployment-by-pull-request-id
-      parameters:
-        -
-          name: uuid
-          in: path
-          description: 'UUID of the application.'
-          required: true
-          schema:
-            type: string
-        -
-          name: pull_request_id
-          in: path
-          description: 'Pull request ID of the preview to delete.'
-          required: true
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: 'Preview deletion queued.'
-          content:
-            application/json:
-              schema:
-                properties:
-                  message: { type: string }
-                type: object
-        '401':
-          $ref: '#/components/responses/401'
-        '400':
-          $ref: '#/components/responses/400'
-        '404':
-          $ref: '#/components/responses/404'
-        '422':
-          $ref: '#/components/responses/422'
-      security:
-        -
-          bearerAuth: []
-    patch:
-      tags:
-        - Applications
-      summary: 'Update Preview Domains'
-      description: 'Replace domains for a preview deployment. Use domains for regular applications or docker_compose_domains for Docker Compose applications. Ports are stored as internal overrides while public domains remain portless.'
-      operationId: update-preview-domains-by-pull-request-id
-      parameters:
-        -
-          name: uuid
-          in: path
-          required: true
-          schema:
-            type: string
-        -
-          name: pull_request_id
-          in: path
-          required: true
-          schema:
-            type: integer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              properties:
-                domains:
-                  type: [string, 'null']
-                  example: 'https://pr.example.com:3000'
-                docker_compose_domains:
-                  type: [array, 'null']
-                  items: { properties: { name: { type: string }, domain: { type: [string, 'null'] }, redirect: { type: [string, 'null'], enum: [www, non-www, both] } }, type: object }
-                force_domain_override:
-                  type: boolean
-                  default: false
-              type: object
-      responses:
-        '200':
-          description: 'Preview domains updated.'
-        '401':
-          $ref: '#/components/responses/401'
-        '403':
-          $ref: '#/components/responses/403'
-        '404':
-          $ref: '#/components/responses/404'
-        '409':
-          description: 'Domain conflict.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -2841,7 +2998,7 @@ paths:
         -
           name: docker_cleanup
           in: query
-          description: 'Perform docker cleanup (prune networks, volumes, etc.).'
+          description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.'
           schema:
             type: boolean
             default: true
@@ -3069,7 +3226,7 @@ paths:
                   description: 'Whether this is a directory mount (file only, default false).'
                 fs_path:
                   type: string
-                  description: 'Host directory path (required when is_directory is true).'
+                  description: 'Host path. Required for directory mounts and host file mounts. Optional for file mounts with content (default: inside the resource directory). An absolute path can be anywhere on the host; a relative path is inside the resource directory. A directory or file mount outside the resource directory needs a token with the deploy permission. Coolify never deletes a path outside the resource directory.'
               type: object
               additionalProperties: false
       responses:
@@ -3085,6 +3242,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '403':
+          description: 'The token needs the deploy permission for a mount outside the resource directory.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -3135,7 +3294,7 @@ paths:
                 content:
                   type: string
                   nullable: true
-                  description: 'The file content (file only, not allowed for read-only storages).'
+                  description: 'The file content (file only, not allowed for read-only storages). Changing the content of a file outside the resource directory needs the deploy permission.'
               type: object
               additionalProperties: false
       responses:
@@ -3151,6 +3310,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '403':
+          description: 'The token needs the deploy permission to change the content of a file outside the resource directory.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -3541,6 +3702,86 @@ paths:
           $ref: '#/components/responses/401'
         '404':
           $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+      security:
+        -
+          bearerAuth: []
+  /audit-events:
+    get:
+      tags:
+        - 'Audit Events'
+      summary: List
+      description: 'List audit events of the team. Only team admins and owners can view audit events. Actor e-mail, token, metadata, changes, IP address, and user agent are returned only for tokens with the read:sensitive or root permission.'
+      operationId: list-audit-events
+      parameters:
+        -
+          name: per_page
+          in: query
+          description: 'Items per page.'
+          required: false
+          schema:
+            type: integer
+            default: 25
+            maximum: 100
+            minimum: 1
+        -
+          name: page
+          in: query
+          description: 'Page number.'
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        -
+          name: search
+          in: query
+          description: 'Search text.'
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+        -
+          name: action
+          in: query
+          description: 'Filter by action. Use all for every action.'
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+        -
+          name: source
+          in: query
+          description: 'Filter by source.'
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - ui
+              - api
+              - mcp
+              - webhook
+              - system
+              - scheduler
+      responses:
+        '200':
+          description: 'A page of audit events, newest first.'
+          content:
+            application/json:
+              schema:
+                properties:
+                  current_page: { type: integer }
+                  data: { type: array, items: { type: object, properties: { id: { type: integer }, team_id: { type: integer, nullable: true }, event: { type: string }, source: { type: string }, action: { type: string }, level: { type: string }, actor_type: { type: string, nullable: true }, actor_id: { type: integer, nullable: true }, actor_name: { type: string, nullable: true }, resource_type: { type: string, nullable: true }, resource_uuid: { type: string, nullable: true }, resource_name: { type: string, nullable: true }, description: { type: string, nullable: true }, created_at: { type: string, format: date-time } } } }
+                  per_page: { type: integer }
+                  last_page: { type: integer }
+                  total: { type: integer }
+                type: object
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          description: 'Only team admins and owners can view audit logs.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -4203,7 +4444,7 @@ paths:
         -
           name: docker_cleanup
           in: query
-          description: 'Run docker cleanup.'
+          description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.'
           required: false
           schema:
             type: boolean
@@ -5765,7 +6006,7 @@ paths:
         -
           name: docker_cleanup
           in: query
-          description: 'Perform docker cleanup (prune networks, volumes, etc.).'
+          description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.'
           schema:
             type: boolean
             default: true
@@ -6134,7 +6375,7 @@ paths:
                   description: 'Whether this is a directory mount (file only, default false).'
                 fs_path:
                   type: string
-                  description: 'Host directory path (required when is_directory is true).'
+                  description: 'Host path. Required for directory mounts and host file mounts. Optional for file mounts with content (default: inside the resource directory). An absolute path can be anywhere on the host; a relative path is inside the resource directory. A directory or file mount outside the resource directory needs a token with the deploy permission. Coolify never deletes a path outside the resource directory.'
               type: object
               additionalProperties: false
       responses:
@@ -6150,6 +6391,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '403':
+          description: 'The token needs the deploy permission for a mount outside the resource directory.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -6200,7 +6443,7 @@ paths:
                 content:
                   type: string
                   nullable: true
-                  description: 'The file content (file only, not allowed for read-only storages).'
+                  description: 'The file content (file only, not allowed for read-only storages). Changing the content of a file outside the resource directory needs the deploy permission.'
               type: object
               additionalProperties: false
       responses:
@@ -6216,6 +6459,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '403':
+          description: 'The token needs the deploy permission to change the content of a file outside the resource directory.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -6558,12 +6803,14 @@ paths:
           description: 'Pull Request Id for deploying specific PR builds. Cannot be used with tag parameter.'
           schema:
             type: integer
+            maximum: 2147483647
         -
           name: pull_request_id
           in: query
           description: 'Preview deployment identifier. Alias of pr.'
           schema:
             type: integer
+            maximum: 2147483647
         -
           name: docker_tag
           in: query
@@ -9066,6 +9313,7 @@ paths:
                   type: integer
                   description: 'The timeout of the scheduled task in seconds.'
                   default: 300
+                  maximum: 36000
                 enabled:
                   type: boolean
                   description: 'The flag to indicate if the scheduled task is enabled.'
@@ -9170,6 +9418,7 @@ paths:
                   type: integer
                   description: 'The timeout of the scheduled task in seconds.'
                   default: 300
+                  maximum: 36000
                 enabled:
                   type: boolean
                   description: 'The flag to indicate if the scheduled task is enabled.'
@@ -9302,6 +9551,7 @@ paths:
                   type: integer
                   description: 'The timeout of the scheduled task in seconds.'
                   default: 300
+                  maximum: 36000
                 enabled:
                   type: boolean
                   description: 'The flag to indicate if the scheduled task is enabled.'
@@ -9406,6 +9656,7 @@ paths:
                   type: integer
                   description: 'The timeout of the scheduled task in seconds.'
                   default: 300
+                  maximum: 36000
                 enabled:
                   type: boolean
                   description: 'The flag to indicate if the scheduled task is enabled.'
@@ -9592,46 +9843,6 @@ paths:
       security:
         -
           bearerAuth: []
-    patch:
-      tags:
-        - 'Private Keys'
-      summary: Update
-      description: 'Update a private key.'
-      operationId: update-private-key
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              required:
-                - private_key
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                private_key:
-                  type: string
-              type: object
-              additionalProperties: false
-      responses:
-        '201':
-          description: "The updated private key's UUID."
-          content:
-            application/json:
-              schema:
-                properties:
-                  uuid: { type: string }
-                type: object
-        '401':
-          $ref: '#/components/responses/401'
-        '400':
-          $ref: '#/components/responses/400'
-        '422':
-          $ref: '#/components/responses/422'
-      security:
-        -
-          bearerAuth: []
   '/security/keys/{uuid}':
     get:
       tags:
@@ -9700,6 +9911,56 @@ paths:
                 properties:
                   message: { type: string, example: 'Private Key is in use and cannot be deleted.' }
                 type: object
+      security:
+        -
+          bearerAuth: []
+    patch:
+      tags:
+        - 'Private Keys'
+      summary: Update
+      description: 'Update a private key.'
+      operationId: update-private-key
+      parameters:
+        -
+          name: uuid
+          in: path
+          description: 'Private Key UUID'
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - private_key
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                private_key:
+                  type: string
+              type: object
+              additionalProperties: false
+      responses:
+        '201':
+          description: "The updated private key's UUID."
+          content:
+            application/json:
+              schema:
+                properties:
+                  uuid: { type: string }
+                type: object
+        '401':
+          $ref: '#/components/responses/401'
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          description: 'Private Key not found.'
+        '422':
+          $ref: '#/components/responses/422'
       security:
         -
           bearerAuth: []
@@ -10547,15 +10808,18 @@ paths:
                   type: [string, 'null']
                 traffic_topn:
                   type: integer
+                  maximum: 1000
                   minimum: 1
                 traffic_sample_threshold:
                   type: integer
                   minimum: 0
                 traffic_retention_1h_days:
                   type: integer
+                  maximum: 365
                   minimum: 1
                 traffic_retention_1d_days:
                   type: integer
+                  maximum: 3650
                   minimum: 1
                 is_geoip_enabled:
                   type: boolean
@@ -11971,7 +12235,7 @@ paths:
         -
           name: docker_cleanup
           in: query
-          description: 'Run docker cleanup.'
+          description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.'
           required: false
           schema:
             type: boolean
@@ -12547,7 +12811,7 @@ paths:
         -
           name: docker_cleanup
           in: query
-          description: 'Perform docker cleanup (prune networks, volumes, etc.).'
+          description: 'Run docker cleanup when the server disk usage is at or above its cleanup threshold. Skipped when a cleanup ran on the server in the last hour.'
           schema:
             type: boolean
             default: true
@@ -12689,7 +12953,7 @@ paths:
                   description: 'Whether this is a directory mount (file only, default false).'
                 fs_path:
                   type: string
-                  description: 'Host directory path (required when is_directory is true).'
+                  description: 'Host path. Required for directory mounts and host file mounts. Optional for file mounts with content (default: inside the resource directory). An absolute path can be anywhere on the host; a relative path is inside the resource directory. A directory or file mount outside the resource directory needs a token with the deploy permission. Coolify never deletes a path outside the resource directory.'
               type: object
               additionalProperties: false
       responses:
@@ -12705,6 +12969,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '403':
+          description: 'The token needs the deploy permission for a mount outside the resource directory.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -12755,7 +13021,7 @@ paths:
                 content:
                   type: string
                   nullable: true
-                  description: 'The file content (file only, not allowed for read-only storages).'
+                  description: 'The file content (file only, not allowed for read-only storages). Changing the content of a file outside the resource directory needs the deploy permission.'
               type: object
               additionalProperties: false
       responses:
@@ -12771,6 +13037,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '403':
+          description: 'The token needs the deploy permission to change the content of a file outside the resource directory.'
         '422':
           $ref: '#/components/responses/422'
       security:
@@ -14347,6 +14615,71 @@ components:
             - 'null'
           format: date-time
       type: object
+    ApplicationPreview:
+      properties:
+        uuid:
+          type: string
+        pull_request_id:
+          type: integer
+        pull_request_html_url:
+          type:
+            - string
+            - 'null'
+        git_type:
+          type:
+            - string
+            - 'null'
+        status:
+          type: string
+        domains:
+          type:
+            - string
+            - 'null'
+        docker_compose_domains:
+          type:
+            - array
+            - 'null'
+          items:
+            properties:
+              name:
+                type: string
+              domain:
+                type:
+                  - string
+                  - 'null'
+              redirect:
+                type:
+                  - string
+                  - 'null'
+            type: object
+        domain_port_overrides:
+          type:
+            - object
+            - 'null'
+        docker_registry_image_tag:
+          type:
+            - string
+            - 'null'
+        last_online_at:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      type: object
+    ApplicationPreviewDeployment:
+      properties:
+        message:
+          type: string
+        deployment_uuid:
+          type:
+            - string
+            - 'null'
+        preview:
+          $ref: '#/components/schemas/ApplicationPreview'
+      type: object
     VolumeBackupScheduleRequest:
       required:
         - frequency
@@ -15531,11 +15864,14 @@ components:
       scheme: bearer
 tags:
   -
+    name: Applications
+    description: Applications
+  -
     name: 'Secret Managers'
     description: 'Secret Managers'
   -
-    name: Applications
-    description: Applications
+    name: 'Audit Events'
+    description: 'Audit Events'
   -
     name: 'Cloud-init Scripts'
     description: 'Cloud-init Scripts'

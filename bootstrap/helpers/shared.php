@@ -1021,15 +1021,16 @@ function isCloud(): bool
 }
 
 /**
- * Resolve the queue used for application deployments, database starts and service starts.
+ * Resolve the queue used for application deployments and for database, service and proxy
+ * starts and restarts.
  *
  * On cloud these jobs run on a dedicated `deployments` queue so they can be drained by an
  * isolated Horizon worker pool; self-hosted keeps them on the shared `high` queue. Routing
  * is decided by `isCloud()` (config-based) rather than `HORIZON_QUEUES`, so the dispatching
  * process needs no special env — only the worker must be configured to drain `deployments`.
  *
- * IMPORTANT: on cloud a worker MUST include `deployments` in its `HORIZON_QUEUES`, otherwise
- * these jobs are never processed.
+ * On cloud, config/horizon.php provisions a dedicated `deployments` pool in production
+ * (see docs/cloud-horizon-workers.md).
  */
 function deployment_queue(): string
 {
@@ -1045,12 +1046,46 @@ function deployment_queue(): string
  * by `isCloud()` (config-based), so the dispatching process needs no special env — only the
  * worker must be configured to drain `crons`.
  *
- * IMPORTANT: on cloud a worker MUST include `crons` in its `HORIZON_QUEUES`, otherwise these
- * jobs are never processed.
+ * On cloud, config/horizon.php provisions a dedicated `crons` pool in production
+ * (see docs/cloud-horizon-workers.md).
  */
 function crons_queue(): string
 {
     return isCloud() ? 'crons' : 'high';
+}
+
+/**
+ * Resolve the queue used for slow server maintenance — scheduled, manual and stop-triggered
+ * Docker cleanups, and weekly server patch checks.
+ *
+ * On cloud these jobs run on a dedicated `maintenance` queue so a small, bounded Horizon pool
+ * drains them and slow remote prunes cannot occupy the `high` workers; self-hosted keeps them
+ * on the shared `high` queue, so a custom `HORIZON_QUEUES` does not need a new queue name. Routing is decided by `isCloud()` (config-based), so the dispatching
+ * process needs no special env — only the worker must be configured to drain `maintenance`.
+ *
+ * On cloud, config/horizon.php provisions a dedicated `maintenance` pool in production
+ * (see docs/cloud-horizon-workers.md).
+ */
+function maintenance_queue(): string
+{
+    return isCloud() ? 'maintenance' : 'high';
+}
+
+/**
+ * Resolve the queue used for incoming webhook processing — GitHub pull request webhooks,
+ * Stripe events, and the server limit checks that follow subscription changes.
+ *
+ * On cloud these jobs run on a dedicated `webhooks` queue so a busy `high` queue cannot delay
+ * them; self-hosted keeps them on the shared `high` queue, so a custom `HORIZON_QUEUES` does
+ * not need a new queue name. Routing is decided by `isCloud()` (config-based), so the
+ * dispatching process needs no special env — only the worker must be configured to drain `webhooks`.
+ *
+ * On cloud, config/horizon.php provisions a dedicated `webhooks` pool in production
+ * (see docs/cloud-horizon-workers.md).
+ */
+function webhooks_queue(): string
+{
+    return isCloud() ? 'webhooks' : 'high';
 }
 
 function translate_cron_expression($expression_to_validate): string
@@ -1566,6 +1601,24 @@ function get_service_templates(bool $force = false): Collection
     return Cache::remember("service-templates:{$mtime}", now()->addDay(), function () use ($path) {
         return collect(json_decode(File::get($path)))->sortKeys();
     });
+}
+
+/**
+ * The template key for a service type. A renamed template keeps its old key as an alias, so API callers
+ * and services stored with the old key still find the template. A key that the templates contain is
+ * returned as is.
+ */
+function resolve_service_template_key(?string $type, ?Collection $templates = null): ?string
+{
+    $aliases = [
+        'denoKV' => 'deno-kv',
+    ];
+    if (blank($type) || ! isset($aliases[$type])) {
+        return $type;
+    }
+    $templates ??= get_service_templates();
+
+    return $templates->has($type) ? $type : $aliases[$type];
 }
 
 function getResourceByUuid(string $uuid, ?int $teamId = null)
@@ -2902,7 +2955,7 @@ function parseDockerComposeFile(Service|Application $resource, bool $isNew = fal
                             $target = data_get_str($volume, 'target');
                             $content = data_get($volume, 'content');
                             $isDirectory = (bool) data_get($volume, 'isDirectory', null) || (bool) data_get($volume, 'is_directory', null);
-                            validateComposeContentVolumeSource($volume, $savedService->service->workdir());
+                            validateComposeContentVolumeSource($volume);
                             $foundConfig = $savedService->fileStorages()->whereMountPath($target)->first();
                             if ($foundConfig) {
                                 $contentNotNull = data_get($foundConfig, 'content');

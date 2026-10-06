@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\ApplicationPreviewsController;
 use App\Http\Controllers\Api\ApplicationsController;
 use App\Http\Controllers\Api\ApplicationSecretManagerController;
 use App\Http\Controllers\Api\AuditEventsController;
@@ -290,6 +291,9 @@ Route::group([
     Route::post('/applications/{uuid}/restart', [ApplicationsController::class, 'action_restart'])->middleware(['api.ability:deploy']);
     Route::post('/applications/{uuid}/stop', [ApplicationsController::class, 'action_stop'])->middleware(['api.ability:deploy']);
 
+    Route::get('/applications/{uuid}/previews', [ApplicationPreviewsController::class, 'index'])->middleware(['api.ability:read']);
+    Route::post('/applications/{uuid}/previews', [ApplicationPreviewsController::class, 'store'])->middleware(['api.ability:deploy']);
+    Route::get('/applications/{uuid}/previews/{pull_request_id}', [ApplicationPreviewsController::class, 'show'])->middleware(['api.ability:read']);
     Route::patch('/applications/{uuid}/previews/{pull_request_id}', [ApplicationsController::class, 'update_preview_by_pull_request_id'])->middleware(['api.ability:write']);
     Route::delete('/applications/{uuid}/previews/{pull_request_id}', [ApplicationsController::class, 'delete_preview_by_pull_request_id'])->middleware(['api.ability:write']);
 
@@ -317,9 +321,9 @@ Route::group([
     Route::post('/databases/sqlite', [DatabasesController::class, 'create_database_sqlite'])->middleware(['api.ability:write']);
 
     Route::get('/databases/{uuid}', [DatabasesController::class, 'database_by_uuid'])->middleware(['api.ability:read']);
-    Route::post('/databases/{uuid}/imports/uploads', [DatabasesController::class, 'upload_import'])->middleware(['api.ability:deploy'])->name('api.databases.imports.upload');
-    Route::post('/databases/{uuid}/imports', [DatabasesController::class, 'create_import'])->middleware(['api.ability:deploy'])->name('api.databases.imports.store');
-    Route::get('/databases/{uuid}/imports/{activity_id}', [DatabasesController::class, 'show_import'])->middleware(['api.ability:read'])->name('api.databases.imports.show');
+    Route::post('/databases/{uuid}/imports/uploads', [DatabasesController::class, 'upload_import'])->middleware(['api.ability:write'])->name('api.databases.imports.upload');
+    Route::post('/databases/{uuid}/imports', [DatabasesController::class, 'create_import'])->middleware(['api.ability:write'])->name('api.databases.imports.store');
+    Route::get('/databases/{uuid}/imports/{activity_id}', [DatabasesController::class, 'show_import'])->middleware(['api.ability:read'])->whereNumber('activity_id')->name('api.databases.imports.show');
     Route::get('/databases/{uuid}/backups', [DatabasesController::class, 'database_backup_details_uuid'])->middleware(['api.ability:read']);
     Route::get('/databases/{uuid}/backups/{scheduled_backup_uuid}/executions', [DatabasesController::class, 'list_backup_executions'])->middleware(['api.ability:read']);
     Route::patch('/databases/{uuid}', [DatabasesController::class, 'update_by_uuid'])->middleware(['api.ability:write']);
@@ -419,9 +423,9 @@ Route::group([
 
     Route::get('/services/{uuid}/databases', [ServiceDatabasesController::class, 'index'])->middleware(['api.ability:read']);
     Route::get('/services/{uuid}/databases/{database_uuid}', [ServiceDatabasesController::class, 'show'])->middleware(['api.ability:read']);
-    Route::post('/services/{uuid}/databases/{database_uuid}/imports/uploads', [ServiceDatabasesController::class, 'upload_import'])->middleware(['api.ability:deploy'])->name('api.service-databases.imports.upload');
-    Route::post('/services/{uuid}/databases/{database_uuid}/imports', [ServiceDatabasesController::class, 'create_import'])->middleware(['api.ability:deploy'])->name('api.service-databases.imports.store');
-    Route::get('/services/{uuid}/databases/{database_uuid}/imports/{activity_id}', [ServiceDatabasesController::class, 'show_import'])->middleware(['api.ability:read'])->name('api.service-databases.imports.show');
+    Route::post('/services/{uuid}/databases/{database_uuid}/imports/uploads', [ServiceDatabasesController::class, 'upload_import'])->middleware(['api.ability:write'])->name('api.service-databases.imports.upload');
+    Route::post('/services/{uuid}/databases/{database_uuid}/imports', [ServiceDatabasesController::class, 'create_import'])->middleware(['api.ability:write'])->name('api.service-databases.imports.store');
+    Route::get('/services/{uuid}/databases/{database_uuid}/imports/{activity_id}', [ServiceDatabasesController::class, 'show_import'])->middleware(['api.ability:read'])->whereNumber('activity_id')->name('api.service-databases.imports.show');
     Route::patch('/services/{uuid}/databases/{database_uuid}', [ServiceDatabasesController::class, 'update'])->middleware(['api.ability:write']);
     Route::get('/services/{uuid}/databases/{database_uuid}/logs', [ServiceDatabasesController::class, 'logs'])->middleware(['api.ability:read:sensitive']);
     Route::post('/services/{uuid}/databases/{database_uuid}/start', [ServiceDatabasesController::class, 'start'])->middleware(['api.ability:deploy']);

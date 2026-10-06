@@ -7,6 +7,7 @@ use App\Actions\Server\InstallDocker;
 use App\Actions\Server\InstallPrerequisites;
 use App\Actions\Server\StartSentinel;
 use App\Actions\Server\ValidatePrerequisites;
+use App\Enums\ApplicationDeploymentStatus;
 use App\Enums\ProxyTypes;
 use App\Enums\ServerRole;
 use App\Events\ServerReachabilityChanged;
@@ -18,7 +19,6 @@ use App\Jobs\ServerConnectionCheckJob;
 use App\Livewire\Server\Proxy;
 use App\Notifications\Server\Reachable;
 use App\Notifications\Server\Unreachable;
-use App\Services\ConfigurationRepository;
 use App\Services\DigitalOceanService;
 use App\Services\HetznerService;
 use App\Services\VultrService;
@@ -34,9 +34,11 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Support\Stringable;
 use OpenApi\Attributes as OA;
 use Spatie\SchemalessAttributes\Casts\SchemalessAttributes;
@@ -235,14 +237,41 @@ class Server extends BaseModel
             $server->destinations()->each(function ($destination) {
                 $destination->delete();
             });
+            // Leftover active runner rows would block deleting the GitHub App.
+            GithubRunnerExecution::deleteAndDeregister(GithubRunnerExecution::query()->where('server_id', $server->id));
+            $server->githubRunnerConfig()->delete();
             $server->settings()->delete();
             $server->sslCertificates()->delete();
             $server->notificationThrottles()->delete();
         });
 
+        static::deleted(function (Server $server) {
+            $server->failQueuedDeployments();
+        });
+
         static::updated(function () {
             static::flushIdentityMap();
         });
+    }
+
+    /**
+     * Fail the queued deployments of a deleted server, because they can never start.
+     */
+    public function failQueuedDeployments(): void
+    {
+        ApplicationDeploymentQueue::query()
+            ->where('server_id', $this->id)
+            ->where('status', ApplicationDeploymentStatus::QUEUED->value)
+            ->eachById(function (ApplicationDeploymentQueue $deployment) {
+                $updated = ApplicationDeploymentQueue::query()
+                    ->whereKey($deployment->id)
+                    ->where('status', ApplicationDeploymentStatus::QUEUED->value)
+                    ->update(['status' => ApplicationDeploymentStatus::FAILED->value]);
+
+                if ($updated > 0) {
+                    $deployment->addLogEntry('The server was deleted.', 'stderr');
+                }
+            });
     }
 
     /**
@@ -1050,7 +1079,6 @@ $siteAddress {
         $this->settings->save();
         $sshKeyFileLocation = "id.root@{$this->uuid}";
         Storage::disk('ssh-keys')->delete($sshKeyFileLocation);
-        $this->disableSshMux();
     }
 
     public function sentinelHeartbeat(bool $isReset = false)
@@ -1082,6 +1110,25 @@ $siteAddress {
     public static function sentinelReportedVersionCacheKey(int $serverId): string
     {
         return "sentinel:reported-version:{$serverId}";
+    }
+
+    /**
+     * The last known reason why Sentinel pushes do not arrive. It is shown while Sentinel is out of sync.
+     */
+    public function sentinelPushProblem(): ?string
+    {
+        return Cache::get("sentinel:push-problem:{$this->id}");
+    }
+
+    public function rememberSentinelPushProblem(?string $problem): void
+    {
+        if (blank($problem)) {
+            Cache::forget("sentinel:push-problem:{$this->id}");
+
+            return;
+        }
+
+        Cache::put("sentinel:push-problem:{$this->id}", Str::limit($problem, 500), now()->addDay());
     }
 
     public function isSentinelLive()
@@ -1785,31 +1832,39 @@ $siteAddress {
     {
         ['uptime' => $uptime] = $this->validateConnection();
         if ($uptime === false) {
-            foreach ($this->applications() as $application) {
-                $application->status = 'exited';
-                $application->save();
-            }
-            foreach ($this->databases() as $database) {
-                $database->status = 'exited';
-                $database->save();
-            }
-            foreach ($this->services() as $service) {
-                $apps = $service->applications()->get();
-                $dbs = $service->databases()->get();
-                foreach ($apps as $app) {
-                    $app->status = 'exited';
-                    $app->save();
-                }
-                foreach ($dbs as $db) {
-                    $db->status = 'exited';
-                    $db->save();
-                }
-            }
+            $this->markResourcesAsExited();
 
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * Mark all resources on this server as exited, because their containers cannot be checked.
+     */
+    public function markResourcesAsExited(): void
+    {
+        foreach ($this->applications() as $application) {
+            $application->status = 'exited';
+            $application->save();
+        }
+        foreach ($this->databases() as $database) {
+            $database->status = 'exited';
+            $database->save();
+        }
+        foreach ($this->services() as $service) {
+            $apps = $service->applications()->get();
+            $dbs = $service->databases()->get();
+            foreach ($apps as $app) {
+                $app->status = 'exited';
+                $app->save();
+            }
+            foreach ($dbs as $db) {
+                $db->status = 'exited';
+                $db->save();
+            }
+        }
     }
 
     public function isReachableChanged()
@@ -1845,13 +1900,11 @@ $siteAddress {
 
     public function validateConnection(bool $justCheckingNewKey = false)
     {
-        $this->disableSshMux();
-
         if ($this->skipServer()) {
             return ['uptime' => false, 'error' => 'Server skipped.'];
         }
         try {
-            instant_remote_process(['ls /'], $this);
+            instant_remote_process(['ls /'], $this, disableMultiplexing: true);
             if ($this->settings->is_reachable === false) {
                 $this->settings->is_reachable = true;
                 $this->settings->save();
@@ -2142,12 +2195,6 @@ $siteAddress {
         return $this->applications()->count() == 0 &&
             $this->databases()->count() == 0 &&
             $this->services()->count() == 0;
-    }
-
-    private function disableSshMux(): void
-    {
-        $configRepository = app(ConfigurationRepository::class);
-        $configRepository->disableSshMux();
     }
 
     /**

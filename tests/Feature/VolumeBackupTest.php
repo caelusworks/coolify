@@ -61,8 +61,8 @@ it('allows large volume backups to run for ten hours by default', function () {
 
     expect($job->timeout)->toBe(36000)
         ->and((new VolumeBackups)->timeout)->toBe(36000)
-        ->and(config('horizon.defaults.s6.timeout'))->toBeGreaterThan($job->timeout)
-        ->and(config('queue.connections.redis.retry_after'))->toBeGreaterThan(config('horizon.defaults.s6.timeout'));
+        ->and(config('horizon.worker_timeout'))->toBeGreaterThan($job->timeout)
+        ->and(config('queue.connections.redis.retry_after'))->toBeGreaterThan(config('horizon.worker_timeout'));
 });
 
 it('changes the default volume backup timeout without changing existing timeouts', function () {
@@ -208,6 +208,61 @@ it('shows readable service storage backup target labels', function () {
         ->assertSet('targets.1.type', 'Directus')
         ->assertSee('Directus: directus-templates');
 });
+
+it('assigns a new volume backup schedule to the team of its resource, not the current team', function (string $resourceType) {
+    $team = Team::factory()->create();
+    $user = signInForVolumeBackups($this, $team);
+    [$application, $volume, $server] = createVolumeBackupApplication($team);
+    $otherTeam = Team::factory()->create();
+    $user->teams()->attach($otherTeam, ['role' => 'owner']);
+    session(['currentTeam' => $otherTeam]);
+
+    if ($resourceType === 'service') {
+        $service = Service::factory()->create([
+            'server_id' => $server->id,
+            'environment_id' => $application->environment_id,
+            'destination_id' => $application->destination_id,
+            'destination_type' => $application->destination_type,
+        ]);
+        $serviceApplication = ServiceApplication::create(['uuid' => new_public_id(), 'name' => 'app', 'service_id' => $service->id]);
+        $volume = LocalPersistentVolume::create([
+            'name' => $service->uuid.'_app-data',
+            'mount_path' => '/data',
+            'resource_id' => $serviceApplication->id,
+            'resource_type' => $serviceApplication->getMorphClass(),
+        ]);
+        $component = Livewire::test(CreateServiceVolumeBackup::class, ['service' => $service, 'selectedTargetKey' => 'volume:'.$volume->id]);
+    } else {
+        $component = Livewire::test(CreateScheduledVolumeBackup::class, ['application' => $application, 'selectedTargetKey' => 'volume:'.$volume->id]);
+    }
+
+    $component->set('frequency', 'daily')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertDispatched('success');
+
+    expect(ScheduledVolumeBackup::query()->sole()->team_id)->toBe($team->id);
+})->with(['application', 'service']);
+
+it('assigns a volume backup schedule saved from its settings page to the team of its resource, not the current team', function (bool $rootTeam) {
+    $team = $rootTeam ? Team::factory()->create(['id' => 0]) : Team::factory()->create();
+    $user = signInForVolumeBackups($this, $team);
+    [$application, $volume] = createVolumeBackupApplication($team);
+    $otherTeam = Team::factory()->create();
+    $user->teams()->attach($otherTeam, ['role' => 'owner']);
+    session(['currentTeam' => $otherTeam]);
+
+    Livewire::test(VolumeBackups::class, ['storage' => $volume, 'resource' => $application])
+        ->set('frequency', 'daily')
+        ->call('save')
+        ->assertHasNoErrors()
+        ->assertDispatched('success');
+
+    expect(ScheduledVolumeBackup::query()->sole()->team_id)->toBe($team->id);
+})->with([
+    'team' => [false],
+    'root team' => [true],
+]);
 
 it('handles scheduled backup persistence failures', function () {
     $team = Team::factory()->create();
@@ -1164,6 +1219,43 @@ it('creates a local scheduled backup for a persistent volume', function () {
         ->and($backup->stop_during_backup)->toBeTrue()
         ->and($backup->save_s3)->toBeFalse();
 });
+
+it('lists and accepts only S3 storages of the resource team when the session team differs', function (bool $rootTeam) {
+    $team = $rootTeam ? Team::factory()->create(['id' => 0]) : Team::factory()->create();
+    $user = signInForVolumeBackups($this, $team);
+    [$application, $volume] = createVolumeBackupApplication($team);
+    $otherTeam = Team::factory()->create();
+    $user->teams()->attach($otherTeam, ['role' => 'owner']);
+    $s3Attributes = ['region' => 'us-east-1', 'key' => 'key', 'secret' => 'secret', 'bucket' => 'bucket', 'endpoint' => 'https://s3.example.com', 'is_usable' => true];
+    $resourceTeamStorage = S3Storage::create([...$s3Attributes, 'name' => 'Resource team S3', 'team_id' => $team->id]);
+    $otherTeamStorage = S3Storage::create([...$s3Attributes, 'name' => 'Other team S3', 'team_id' => $otherTeam->id]);
+    session(['currentTeam' => $otherTeam]);
+
+    $component = Livewire::test(VolumeBackups::class, ['storage' => $volume, 'resource' => $application]);
+
+    expect($component->get('availableS3Storages')->pluck('id')->all())->toBe([$resourceTeamStorage->id])
+        ->and($component->get('s3StorageId'))->toBe($resourceTeamStorage->id);
+
+    $component->set('frequency', 'daily')
+        ->set('saveToS3', true)
+        ->set('s3StorageId', $otherTeamStorage->id)
+        ->assertHasErrors('s3StorageId')
+        ->call('save')
+        ->assertHasErrors('s3StorageId');
+
+    expect(ScheduledVolumeBackup::query()->count())->toBe(0);
+
+    $component->set('s3StorageId', $resourceTeamStorage->id)
+        ->call('save')
+        ->assertHasNoErrors();
+
+    expect(ScheduledVolumeBackup::query()->sole())
+        ->s3_storage_id->toBe($resourceTeamStorage->id)
+        ->save_s3->toBeTrue();
+})->with([
+    'team' => [false],
+    'root team' => [true],
+]);
 
 it('only accepts a usable S3 storage owned by the current team', function () {
     $team = Team::factory()->create();
@@ -2621,6 +2713,7 @@ it('dispatches pending recovery for an execution at most once every five minutes
     Queue::fake();
     $team = Team::factory()->create();
     [$application, $volume] = createVolumeBackupApplication($team);
+    $application->destination->server->settings()->update(['is_reachable' => true, 'is_usable' => true, 'force_disabled' => false]);
     $backup = $volume->scheduledBackups()->create([
         'team_id' => $team->id,
         'frequency' => 'daily',

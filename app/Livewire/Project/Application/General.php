@@ -10,6 +10,7 @@ use App\Models\Application;
 use App\Rules\ValidGitBranch;
 use App\Services\Dns\ManagedDnsRecordCleanup;
 use App\Support\ValidationPatterns;
+use App\Traits\AuditsApplicationSettings;
 use Exception;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
@@ -20,6 +21,7 @@ use Livewire\Features\SupportEvents\Event;
 
 class General extends Component
 {
+    use AuditsApplicationSettings;
     use AuthorizesRequests;
 
     public string $applicationId;
@@ -354,7 +356,7 @@ class General extends Component
         }
 
         try {
-            validateDockerComposeForInjection($this->dockerComposeRaw, composeResourceDirectory($this->application));
+            validateDockerComposeForInjection($this->dockerComposeRaw);
         } catch (Exception $e) {
             throw new Exception(e($e->getMessage()), 0, $e);
         }
@@ -416,7 +418,7 @@ class General extends Component
             $this->application->settings->is_container_label_escape_enabled = $this->isContainerLabelEscapeEnabled;
             $this->application->settings->is_container_label_readonly_enabled = $this->isContainerLabelReadonlyEnabled;
 
-            $this->application->settings->save();
+            $this->saveApplicationSettingsWithAudit($this->application);
         } else {
             // From model to properties
             $this->name = $this->application->name;
@@ -629,7 +631,7 @@ class General extends Component
         if ($this->buildPack !== 'nixpacks' && $this->buildPack !== 'railpack') {
             $this->isStatic = false;
             $this->application->settings->is_static = false;
-            $this->application->settings->save();
+            $this->saveApplicationSettingsWithAudit($this->application);
         } else {
             $this->resetDefaultLabels(false);
         }
@@ -921,7 +923,7 @@ class General extends Component
             $this->application->custom_labels = base64_encode($this->customLabels);
             $this->application->save();
             $this->application->refresh();
-            $dnsCleanup->queueReleaseOfRemovedHostnames($this->application, $previousDnsHostnames, currentTeam()->id);
+            $dnsCleanup->queueReleaseOfRemovedHostnames($this->application, $previousDnsHostnames, $this->application->team()->id);
             $this->syncData();
             if ($oldPortsExposes !== $this->portsExposes) {
                 $this->dispatch('applicationNetworkingUpdated')->to(InternalAccess::class);

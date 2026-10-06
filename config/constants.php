@@ -15,8 +15,8 @@ return [
         // devHostDockerPath() uses them only for that server. The defaults are the legacy docker-compose.dev.yml names.
         'dev_data_volume' => env('DEV_COOLIFY_DATA_VOLUME', 'coolify_dev_coolify_data'),
         'dev_backups_volume' => env('DEV_COOLIFY_BACKUPS_VOLUME', 'coolify_dev_backups_data'),
-        'registry_url' => env('REGISTRY_URL', 'ghcr.io'),
-        'helper_image' => env('HELPER_IMAGE', env('REGISTRY_URL', 'ghcr.io').'/coollabsio/coolify-helper'),
+        'registry_url' => env('REGISTRY_URL', 'docker.io'),
+        'helper_image' => env('HELPER_IMAGE', env('REGISTRY_URL', 'docker.io').'/coollabsio/coolify-helper'),
         'is_windows_docker_desktop' => env('IS_WINDOWS_DOCKER_DESKTOP', false),
         'cdn_url' => env('CDN_URL', 'https://cdn.coollabs.io'),
         'versions_url' => env('VERSIONS_URL', env('CDN_URL', 'https://cdn.coollabs.io').'/coolify/versions.json'),
@@ -109,14 +109,6 @@ return [
 
     ],
 
-    'proxy' => [
-        // How often (seconds) PushServerUpdateJob periodically re-connects the
-        // proxy to Docker networks as a safety net. Real network-layout changes
-        // already connect the proxy on-demand; this only covers gaps (Swarm
-        // networks added via UI, proxy crash recovery).
-        'connect_networks_interval_seconds' => env('PROXY_CONNECT_NETWORKS_INTERVAL_SECONDS', 3600),
-    ],
-
     'github_runner' => [
         // GitHub stops sending jobs to runners that are more than 30 days behind, so the default follows
         // "latest" and is pulled for every runner. Users can pin a tag in the runner settings.
@@ -134,6 +126,11 @@ return [
     'webhooks' => [
         'feedback_discord_webhook' => env('FEEDBACK_DISCORD_WEBHOOK'),
         'dev_webhook' => env('SERVEO_URL'),
+    ],
+
+    'cloudflare' => [
+        'api_token' => env('CLOUDFLARE_API_TOKEN'),
+        'zone_id' => env('CLOUDFLARE_ZONE_ID'),
     ],
 
     'server_checks' => [

@@ -10,12 +10,15 @@ use App\Services\TrafficAnalyticsAggregator;
 use App\Services\TrafficResource;
 use Illuminate\Contracts\View\View;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use Livewire\Attributes\Locked;
 use Livewire\Component;
+use Livewire\Features\SupportLockedProperties\CannotUpdateLockedPropertyException;
 
 /**
  * Traffic analytics tab of one resource (Application or Service). A resource can record
  * under several Sentinel keys (compose services, previews). Sentinel's resource scope
- * merges them exactly; an older Sentinel gets every key fetched and merged here.
+ * merges them exactly; a Sentinel without resource routes (before 1.0.2) gets every key
+ * fetched and merged here.
  */
 abstract class ResourceTrafficAnalytics extends Component
 {
@@ -28,6 +31,7 @@ abstract class ResourceTrafficAnalytics extends Component
 
     public bool $enabled = false;
 
+    #[Locked]
     public ?string $analyticsServerUuid = null;
 
     // Realtime refresh. Off by default (click "Live" to arm it). Only meaningful on the
@@ -49,14 +53,11 @@ abstract class ResourceTrafficAnalytics extends Component
     public ?string $attribution = null;
 
     /**
-     * Per-bucket status-class time series for the stacked area chart. Empty when this
-     * resource's Sentinel lacks the series endpoint, which flips the chart to the donut.
+     * Per-bucket status-class time series for the stacked area chart.
      *
      * @var array<int, array{bucket: int, s2xx: int, s3xx: int, s4xx: int, s5xx: int}>
      */
     public array $series = [];
-
-    public bool $hasSeries = false;
 
     /** @var array<int, string> */
     protected array $breakdownDimensions = ['country', 'referer', 'browser', 'os', 'device', 'protocol', 'cache', 'status', 'agent', 'ip', 'useragent'];
@@ -87,6 +88,14 @@ abstract class ResourceTrafficAnalytics extends Component
         if ($this->enabled) {
             $this->loadData();
         }
+    }
+
+    /**
+     * Subclasses redeclare $chartId, which drops #[Locked], so the lock is enforced here.
+     */
+    public function updatingChartId(): void
+    {
+        throw new CannotUpdateLockedPropertyException('chartId');
     }
 
     public function setRange(string $range): void
@@ -124,8 +133,8 @@ abstract class ResourceTrafficAnalytics extends Component
             [$from, $to] = SentinelTrafficClient::rangeWindow($this->range);
             $client = app(SentinelTrafficClient::class, ['server' => $resource->server()]);
 
-            // Sentinel's resource scope merges every key exactly in one docker exec. An older
-            // Sentinel falls back to all keys of the resource, merged here (approximate).
+            // Sentinel's resource scope merges every key exactly in one docker exec. A Sentinel
+            // before 1.0.2 falls back to all keys of the resource, merged here (approximate).
             $aggregator = new TrafficAnalyticsAggregator($this->breakdownDimensions);
             $aggregator->collectResource($client, $resource->uuid(), $from, $to, $this->range, fn (string $appKey) => $resource->domainForKey($appKey));
 
@@ -137,7 +146,6 @@ abstract class ResourceTrafficAnalytics extends Component
             $this->breakdowns = $aggregator->breakdowns();
             $this->attribution = $aggregator->attribution();
             $this->series = $aggregator->series();
-            $this->hasSeries = $this->series !== [];
 
             $this->dispatch("refreshChartData-{$this->chartId}-status", $this->chartPayload());
         } catch (\Throwable $e) {
@@ -146,8 +154,7 @@ abstract class ResourceTrafficAnalytics extends Component
     }
 
     /**
-     * Payload for the status chart: the stacked-area time series when available,
-     * plus the donut totals as a fallback for older Sentinel builds.
+     * Payload for the status chart: the stacked-area time series and the KPI sparklines.
      *
      * @return array<string, mixed>
      */
@@ -156,14 +163,7 @@ abstract class ResourceTrafficAnalytics extends Component
         $device = $this->deviceChartData();
 
         return [
-            'hasSeries' => $this->hasSeries,
             'range' => $this->range,
-            'seriesData' => [
-                $this->overview['s2xx'] ?? 0,
-                $this->overview['s3xx'] ?? 0,
-                $this->overview['s4xx'] ?? 0,
-                $this->overview['s5xx'] ?? 0,
-            ],
             'timeSeries' => [
                 'categories' => array_column($this->series, 'bucket'),
                 'requests' => $this->requestsSpark(),

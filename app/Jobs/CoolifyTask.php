@@ -36,15 +36,23 @@ class CoolifyTask implements ShouldBeEncrypted, ShouldQueue
 
     /**
      * Create a new job instance.
+     *
+     * @param  int|null  $timeout  Job timeout in seconds; null keeps the default above.
+     * @param  string  $queue  Queue to run on; start actions pass deployment_queue().
      */
     public function __construct(
         public Activity $activity,
         public bool $ignore_errors,
         public $call_event_on_finish,
         public $call_event_data,
+        ?int $timeout = null,
+        string $queue = 'high',
     ) {
+        if ($timeout !== null) {
+            $this->timeout = $timeout;
+        }
 
-        $this->onQueue('high');
+        $this->onQueue($queue);
     }
 
     /**
@@ -95,6 +103,14 @@ class CoolifyTask implements ShouldBeEncrypted, ShouldQueue
             'total_attempts' => $this->attempts(),
             'trace' => $exception?->getTraceAsString(),
         ]);
+
+        // A database import whose restore can still run in the database container stays in progress
+        // until its stop has run, so it keeps blocking other operations on the database.
+        if (DatabaseImportCleanup::stopAfterTaskFailure($this->activity, $exception?->getMessage() ?: 'Job permanently failed')) {
+            RemoteProcessCommand::forget($this->activity);
+
+            return;
+        }
 
         // Update activity status to reflect permanent failure
         // A stopped database import already has the message that explains the stop; the process
