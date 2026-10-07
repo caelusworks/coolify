@@ -5,7 +5,7 @@ $sshCommandTimeout = (int) env('SSH_COMMAND_TIMEOUT', 3600);
 
 return [
     'coolify' => [
-        'version' => env('COOLIFY_VERSION') ?: '4.4.0',
+        'version' => env('COOLIFY_VERSION') ?: '4.4.1',
         'helper_version' => '1.0.17',
         'railpack_version' => '0.23.0',
         'self_hosted' => env('SELF_HOSTED', true),
@@ -22,6 +22,8 @@ return [
         'versions_url' => env('VERSIONS_URL', env('CDN_URL', 'https://cdn.coollabs.io').'/coolify/versions.json'),
         'upgrade_script_url' => env('UPGRADE_SCRIPT_URL', env('CDN_URL', 'https://cdn.coollabs.io').'/coolify/upgrade.sh'),
         'releases_url' => env('RELEASES_URL', 'https://cdn.coollabs.io/coolify/releases.json'),
+        // "sequential" or "concurrent". Empty uses sequential on self-hosted and concurrent on Coolify Cloud.
+        'scheduled_jobs_dispatch_mode' => env('SCHEDULED_JOBS_DISPATCH_MODE'),
     ],
 
     'urls' => [
