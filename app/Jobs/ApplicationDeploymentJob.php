@@ -34,6 +34,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Queue\TimeoutExceededException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Sleep;
@@ -1758,6 +1759,10 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             });
 
             foreach ($runtime_environment_variables as $env) {
+                if ($this->shouldOmitBlankComposeEnvironmentVariable($env)) {
+                    continue;
+                }
+
                 $envs->push($env->key.'='.$this->resolve_environment_variable($env));
             }
 
@@ -1825,6 +1830,10 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             });
 
             foreach ($runtime_environment_variables_preview as $env) {
+                if ($this->shouldOmitBlankComposeEnvironmentVariable($env)) {
+                    continue;
+                }
+
                 $envs->push($env->key.'='.$this->resolve_environment_variable($env));
             }
 
@@ -1839,6 +1848,10 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
                     return $env->is_runtime && ! in_array($env->key, $previewKeys);
                 });
                 foreach ($fallback_production_vars as $env) {
+                    if ($this->shouldOmitBlankComposeEnvironmentVariable($env)) {
+                        continue;
+                    }
+
                     $envs->push($env->key.'='.$this->resolve_environment_variable($env));
                 }
             }
@@ -1866,6 +1879,15 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
         return $key->startsWith('SERVICE_FQDN_')
             || $key->startsWith('SERVICE_URL_')
             || $key->startsWith('SERVICE_NAME_');
+    }
+
+    private function shouldOmitBlankComposeEnvironmentVariable(EnvironmentVariable $environmentVariable): bool
+    {
+        return $this->build_pack === 'dockercompose' && ! $environmentVariable->preservesLegacyComposeNull() && dockerComposeEnvironmentVariableShouldBeUnset(
+            $this->application->docker_compose_raw ?? $this->application->docker_compose,
+            $environmentVariable->key,
+            $environmentVariable->value
+        );
     }
 
     private function save_runtime_environment_variables()
@@ -2106,6 +2128,10 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             }
 
             foreach ($sorted_environment_variables as $env) {
+                if ($this->shouldOmitBlankComposeEnvironmentVariable($env)) {
+                    continue;
+                }
+
                 if ($this->build_pack === 'railpack' && $this->is_reserved_docker_client_env_key($env->key)) {
                     continue;
                 }
@@ -2164,6 +2190,10 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             }
 
             foreach ($sorted_environment_variables as $env) {
+                if ($this->shouldOmitBlankComposeEnvironmentVariable($env)) {
+                    continue;
+                }
+
                 if ($this->build_pack === 'railpack' && $this->is_reserved_docker_client_env_key($env->key)) {
                     continue;
                 }
@@ -3875,6 +3905,10 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
             }
 
             foreach ($envs as $env) {
+                if ($this->shouldOmitBlankComposeEnvironmentVariable($env)) {
+                    continue;
+                }
+
                 $resolvedValue = $this->uses_remote_secret_references($env)
                     ? $this->resolve_environment_variable_raw($env)
                     : $env->getResolvedValueWithServer($this->mainServer);
@@ -3893,6 +3927,10 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
             }
 
             foreach ($envs as $env) {
+                if ($this->shouldOmitBlankComposeEnvironmentVariable($env)) {
+                    continue;
+                }
+
                 $resolvedValue = $this->uses_remote_secret_references($env)
                     ? $this->resolve_environment_variable_raw($env)
                     : $env->getResolvedValueWithServer($this->mainServer);
@@ -5953,7 +5991,9 @@ COPY ./nginx.conf /etc/nginx/conf.d/default.conf");
         $errorClass = get_class($exception);
 
         $this->application_deployment_queue->addLogEntry('========================================', 'stderr');
-        if ($exception instanceof DeploymentException && $exception->isMessageAlreadyLogged()) {
+        if ($exception instanceof TimeoutExceededException) {
+            $this->application_deployment_queue->addLogEntry("Deployment failed: Timeout of {$this->timeout} seconds exceeded. Increase the deployment timeout in the Server settings (Advanced > Builds).", 'stderr');
+        } elseif ($exception instanceof DeploymentException && $exception->isMessageAlreadyLogged()) {
             $this->application_deployment_queue->addLogEntry('Deployment failed.', 'stderr');
         } else {
             $this->application_deployment_queue->addLogEntry("Deployment failed: {$errorMessage}", 'stderr');
