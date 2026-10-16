@@ -915,6 +915,15 @@ function s3_image_url(?int $storageId, ?string $path, int $version): ?string
         return null;
     }
 
+    // S3-compatible endpoints (e.g. Cloudflare R2) require authenticated requests for
+    // every object, including plain GETs, so an unauthenticated direct link only works
+    // when a public CDN has been configured in front of the bucket. Without one, callers
+    // must fall back to the app's own authenticated proxy route.
+    $cdnUrl = instanceSettings()->image_cdn_url;
+    if (blank($cdnUrl)) {
+        return null;
+    }
+
     $storage = S3Storage::query()
         ->whereKey($storageId)
         ->whereTeamId(0)
@@ -925,9 +934,7 @@ function s3_image_url(?int $storageId, ?string $path, int $version): ?string
         return null;
     }
 
-    $baseUrl = instanceSettings()->image_cdn_url ?: $storage->awsUrl();
-
-    return rtrim($baseUrl, '/').'/'.ltrim($path, '/').'?v='.$version;
+    return rtrim($cdnUrl, '/').'/'.ltrim($path, '/').'?v='.$version;
 }
 
 /**
@@ -1497,7 +1504,25 @@ function sslip(Server $server)
     }
     $ip = $server->ip === 'host.docker.internal' ? base_ip() : $server->ip;
 
-    return 'http://'.sslipHostLabel($ip).'.sslip.io';
+    return 'http://'.sslipHostLabel(resolveHostToIp($ip)).'.sslip.io';
+}
+
+/**
+ * Resolve a hostname to its IPv4 (or else IPv6) address. sslip.io only answers for names that
+ * contain an IP address. Returns the input unchanged if it is already an IP or does not resolve.
+ */
+function resolveHostToIp(string $host): string
+{
+    if (filter_var(normalizeIpAddress($host), FILTER_VALIDATE_IP) !== false) {
+        return $host;
+    }
+    $ipv4 = gethostbyname($host);
+    if (filter_var($ipv4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+        return $ipv4;
+    }
+    $ipv6 = data_get(@dns_get_record($host, DNS_AAAA), '0.ipv6');
+
+    return is_string($ipv6) && $ipv6 !== '' ? $ipv6 : $host;
 }
 
 function service_templates_cache_key(): string
@@ -2659,42 +2684,51 @@ function deduplicateAllowlist(array $entries): array
     return $result;
 }
 
-function get_public_ips()
+/**
+ * Detect the instance public IPs with ifconfig.io. Only empty settings are filled, so an address saved in Settings is kept.
+ */
+function get_public_ips(): void
 {
     try {
-        [$first, $second] = Process::concurrently(function (Pool $pool) {
-            $pool->path(__DIR__)->command('curl -4s https://ifconfig.io');
-            $pool->path(__DIR__)->command('curl -6s https://ifconfig.io');
-        });
-        $ipv4 = $first->output();
-        if ($ipv4) {
-            $ipv4 = trim($ipv4);
-            $validate_ipv4 = filter_var($ipv4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
-            if ($validate_ipv4 == false) {
-                echo "Invalid ipv4: $ipv4\n";
-
-                return;
-            }
-            InstanceSettings::get()->update(['public_ipv4' => $ipv4]);
+        $settings = InstanceSettings::get();
+        $columns = array_values(array_filter(['public_ipv4', 'public_ipv6'], fn (string $column) => blank($settings->$column)));
+        if ($columns === []) {
+            return;
         }
-    } catch (Exception $e) {
-        echo "Error: {$e->getMessage()}\n";
-    }
-    try {
-        $ipv6 = $second->output();
-        if ($ipv6) {
-            $ipv6 = trim($ipv6);
-            $validate_ipv6 = filter_var($ipv6, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
-            if ($validate_ipv6 == false) {
-                echo "Invalid ipv6: $ipv6\n";
 
-                return;
-            }
-            InstanceSettings::get()->update(['public_ipv6' => $ipv6]);
+        $detected = detect_public_ips($columns);
+        if ($detected !== []) {
+            $settings->update($detected);
         }
     } catch (Throwable $e) {
         echo "Error: {$e->getMessage()}\n";
     }
+}
+
+/**
+ * Look up the public IPs of this host with ifconfig.io, without saving them.
+ *
+ * @param  list<'public_ipv4'|'public_ipv6'>  $columns
+ * @return array<'public_ipv4'|'public_ipv6', string> valid addresses only
+ */
+function detect_public_ips(array $columns = ['public_ipv4', 'public_ipv6']): array
+{
+    $versions = array_intersect_key(['public_ipv4' => 4, 'public_ipv6' => 6], array_flip($columns));
+    $results = Process::concurrently(function (Pool $pool) use ($versions) {
+        foreach ($versions as $column => $version) {
+            $pool->as($column)->path(__DIR__)->command("curl -{$version}s https://ifconfig.io");
+        }
+    });
+
+    $detected = [];
+    foreach ($versions as $column => $version) {
+        $ip = trim($results[$column]->output());
+        if (filter_var($ip, FILTER_VALIDATE_IP, $version === 4 ? FILTER_FLAG_IPV4 : FILTER_FLAG_IPV6) !== false) {
+            $detected[$column] = $ip;
+        }
+    }
+
+    return $detected;
 }
 
 function isAnyDeploymentInprogress(bool $showAll = false)
@@ -4816,8 +4850,15 @@ function parseScpStyleGitUrl(?string $gitRepository): ?array
     ];
 }
 
-function scpStyleGitUrlToHttps(?string $gitRepository): ?string
+function sshGitUrlToHttps(?string $gitRepository): ?string
 {
+    if (is_string($gitRepository) && str_starts_with($gitRepository, 'ssh://')) {
+        $host = parse_url($gitRepository, PHP_URL_HOST);
+        $path = ltrim((string) parse_url($gitRepository, PHP_URL_PATH), '/');
+
+        return filled($host) && $path !== '' ? "https://{$host}/{$path}" : null;
+    }
+
     $parts = parseScpStyleGitUrl($gitRepository);
 
     if ($parts === null) {
@@ -4833,8 +4874,8 @@ function gitRepositorySlug(?string $gitRepository): string
         return '';
     }
 
-    if (($scp = parseScpStyleGitUrl($gitRepository)) !== null) {
-        $gitRepository = $scp['path'];
+    if (($httpsRepository = sshGitUrlToHttps($gitRepository)) !== null) {
+        $gitRepository = (string) parse_url($httpsRepository, PHP_URL_PATH);
     } elseif (str($gitRepository)->startsWith('http') || str($gitRepository)->contains('github.com')) {
         $gitRepository = str($gitRepository)->replace('https://', '')->replace('http://', '')->replace('github.com/', '');
     }

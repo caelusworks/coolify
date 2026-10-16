@@ -1248,6 +1248,9 @@ class ApplicationsController extends Controller
 
         $this->authorize('create', Application::class);
 
+        // removeUnnecessaryFieldsFromRequest() strips force_domain_override before the docker_compose_domains checks run.
+        $forceDomainOverride = $request->boolean('force_domain_override');
+
         if ($request->instant_deploy) {
             abort_unless($request->user()->tokenCan('deploy') || $request->user()->tokenCan('root'), 403, 'Missing required permissions: deploy');
         }
@@ -1501,7 +1504,7 @@ class ApplicationsController extends Controller
                 });
 
                 $duplicates = $urls->duplicates()->unique()->values();
-                if ($duplicates->isNotEmpty() && ! $request->boolean('force_domain_override')) {
+                if ($duplicates->isNotEmpty() && ! $forceDomainOverride) {
                     $errors[] = 'The current request contains conflicting URLs: '.implode(', ', $duplicates->toArray()).' Use force_domain_override=true to proceed.';
                 }
 
@@ -1522,7 +1525,7 @@ class ApplicationsController extends Controller
                         ], 422);
                     }
 
-                    if ($result['hasConflicts'] && ! $request->boolean('force_domain_override')) {
+                    if ($result['hasConflicts'] && ! $forceDomainOverride) {
                         return response()->json([
                             'message' => 'Domain conflicts detected. Use force_domain_override=true to proceed.',
                             'conflicts' => $result['conflicts'],
@@ -1547,7 +1550,7 @@ class ApplicationsController extends Controller
                 $application->domain_port_overrides = $domainPortOverrides;
             }
             $gitRepository = $application->git_repository;
-            $httpsRepository = scpStyleGitUrlToHttps($gitRepository);
+            $httpsRepository = sshGitUrlToHttps($gitRepository);
             if (is_string($httpsRepository)) {
                 $gitRepository = $httpsRepository;
                 $application->git_repository = $httpsRepository;
@@ -1769,7 +1772,7 @@ class ApplicationsController extends Controller
                 });
 
                 $duplicates = $urls->duplicates()->unique()->values();
-                if ($duplicates->isNotEmpty() && ! $request->boolean('force_domain_override')) {
+                if ($duplicates->isNotEmpty() && ! $forceDomainOverride) {
                     $errors[] = 'The current request contains conflicting URLs: '.implode(', ', $duplicates->toArray()).' Use force_domain_override=true to proceed. ';
                 }
 
@@ -1790,7 +1793,7 @@ class ApplicationsController extends Controller
                         ], 422);
                     }
 
-                    if ($result['hasConflicts'] && ! $request->boolean('force_domain_override')) {
+                    if ($result['hasConflicts'] && ! $forceDomainOverride) {
                         return response()->json([
                             'message' => 'Domain conflicts detected. Use force_domain_override=true to proceed.',
                             'conflicts' => $result['conflicts'],
@@ -2002,7 +2005,7 @@ class ApplicationsController extends Controller
                 });
 
                 $duplicates = $urls->duplicates()->unique()->values();
-                if ($duplicates->isNotEmpty() && ! $request->boolean('force_domain_override')) {
+                if ($duplicates->isNotEmpty() && ! $forceDomainOverride) {
                     $errors[] = 'The current request contains conflicting URLs: '.implode(', ', $duplicates->toArray()).' Use force_domain_override=true to proceed.';
                 }
 
@@ -2023,7 +2026,7 @@ class ApplicationsController extends Controller
                         ], 422);
                     }
 
-                    if ($result['hasConflicts'] && ! $request->boolean('force_domain_override')) {
+                    if ($result['hasConflicts'] && ! $forceDomainOverride) {
                         return response()->json([
                             'message' => 'Domain conflicts detected. Use force_domain_override=true to proceed.',
                             'conflicts' => $result['conflicts'],
@@ -3060,14 +3063,10 @@ class ApplicationsController extends Controller
                     schema: new OA\Schema(
                         type: 'object',
                         properties: [
-                            'project_uuid' => ['type' => 'string', 'description' => 'The project UUID.'],
-                            'server_uuid' => ['type' => 'string', 'description' => 'The server UUID.'],
-                            'environment_name' => ['type' => 'string', 'description' => 'The environment name.'],
                             'github_app_uuid' => ['type' => 'string', 'description' => 'The Github App UUID.'],
                             'git_repository' => ['type' => 'string', 'description' => 'The git repository URL.'],
                             'git_branch' => ['type' => 'string', 'description' => 'The git branch.'],
                             'ports_exposes' => ['type' => 'string', 'description' => 'The ports to expose.'],
-                            'destination_uuid' => ['type' => 'string', 'description' => 'The destination UUID.'],
                             'build_pack' => ['type' => 'string', 'enum' => ['nixpacks', 'railpack', 'static', 'dockerfile', 'dockercompose'], 'description' => 'The build pack type.'],
                             'name' => ['type' => 'string', 'description' => 'The application name.'],
                             'description' => ['type' => 'string', 'description' => 'The application description.'],
@@ -3259,10 +3258,12 @@ class ApplicationsController extends Controller
         $dnsCleanup = app(ManagedDnsRecordCleanup::class);
         $previousDnsHostnames = $dnsCleanup->hostnamesOf($application);
         $server = $application->destination->server;
-        $allowedFields = ['name', 'description', 'is_static', 'is_spa', 'is_auto_deploy_enabled', 'is_force_https_enabled', 'is_preview_deployments_enabled', 'domains', 'noindex_domains', 'git_repository', 'git_branch', 'git_commit_sha', 'docker_registry_image_name', 'docker_registry_image_tag', 'build_pack', 'static_image', 'install_command', 'build_command', 'start_command', 'ports_exposes', 'ports_mappings', 'custom_network_aliases', 'base_directory', 'publish_directory', 'health_check_enabled', 'health_check_type', 'health_check_command', 'health_check_path', 'health_check_port', 'health_check_host', 'health_check_method', 'health_check_return_code', 'health_check_scheme', 'health_check_response_text', 'health_check_interval', 'health_check_timeout', 'health_check_retries', 'health_check_start_period', 'limits_memory', 'limits_memory_swap', 'limits_memory_swappiness', 'limits_memory_reservation', 'limits_cpus', 'limits_cpuset', 'limits_cpu_shares', 'custom_labels', 'custom_docker_run_options', 'post_deployment_command', 'post_deployment_command_container', 'pre_deployment_command', 'pre_deployment_command_container', 'watch_paths', 'manual_webhook_secret_github', 'manual_webhook_secret_gitlab', 'manual_webhook_secret_bitbucket', 'manual_webhook_secret_gitea', 'dockerfile_location', 'dockerfile_target_build', 'docker_compose_location', 'docker_compose_custom_start_command', 'docker_compose_custom_build_command', 'docker_compose_domains', 'redirect', 'instant_deploy', 'use_build_server', 'use_build_secrets', 'custom_nginx_configuration', 'is_http_basic_auth_enabled', 'http_basic_auth_username', 'http_basic_auth_password', 'connect_to_docker_network', 'force_domain_override', 'is_container_label_escape_enabled', 'is_preserve_repository_enabled', 'preview_url_template', 'max_restart_count', ...self::APPLICATION_SETTING_FIELDS];
+        $allowedFields = ['name', 'description', 'is_static', 'is_spa', 'is_auto_deploy_enabled', 'is_force_https_enabled', 'is_preview_deployments_enabled', 'domains', 'noindex_domains', 'git_repository', 'git_branch', 'git_commit_sha', 'docker_registry_image_name', 'docker_registry_image_tag', 'build_pack', 'static_image', 'install_command', 'build_command', 'start_command', 'ports_exposes', 'ports_mappings', 'custom_network_aliases', 'base_directory', 'publish_directory', 'health_check_enabled', 'health_check_type', 'health_check_command', 'health_check_path', 'health_check_port', 'health_check_host', 'health_check_method', 'health_check_return_code', 'health_check_scheme', 'health_check_response_text', 'health_check_interval', 'health_check_timeout', 'health_check_retries', 'health_check_start_period', 'limits_memory', 'limits_memory_swap', 'limits_memory_swappiness', 'limits_memory_reservation', 'limits_cpus', 'limits_cpuset', 'limits_cpu_shares', 'custom_labels', 'custom_docker_run_options', 'post_deployment_command', 'post_deployment_command_container', 'pre_deployment_command', 'pre_deployment_command_container', 'watch_paths', 'manual_webhook_secret_github', 'manual_webhook_secret_gitlab', 'manual_webhook_secret_bitbucket', 'manual_webhook_secret_gitea', 'dockerfile_location', 'dockerfile_target_build', 'docker_compose_location', 'docker_compose_custom_start_command', 'docker_compose_custom_build_command', 'docker_compose_domains', 'redirect', 'instant_deploy', 'use_build_server', 'use_build_secrets', 'custom_nginx_configuration', 'is_http_basic_auth_enabled', 'http_basic_auth_username', 'http_basic_auth_password', 'connect_to_docker_network', 'force_domain_override', 'is_container_label_escape_enabled', 'is_preserve_repository_enabled', 'preview_url_template', 'max_restart_count', 'github_app_uuid', 'dockerfile', ...self::APPLICATION_SETTING_FIELDS];
 
         $validationRules = [
             'name' => 'string|max:255',
+            'github_app_uuid' => 'string',
+            'dockerfile' => 'string',
             'description' => 'string|nullable',
             'watch_paths' => 'string|nullable',
             'docker_compose_domains' => 'array|nullable',
@@ -3320,6 +3321,28 @@ class ApplicationsController extends Controller
                 'custom_nginx_configuration' => $customNginxConfiguration,
             ]);
         }
+        if ($request->has('dockerfile')) {
+            if (blank($application->dockerfile)) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => [
+                        'dockerfile' => 'The dockerfile can only be updated for applications created from a Dockerfile.',
+                    ],
+                ], 422);
+            }
+            $dockerfile = is_string($request->dockerfile) && isBase64Encoded($request->dockerfile) ? base64_decode($request->dockerfile) : false;
+            if ($dockerfile === false || blank($dockerfile) || mb_detect_encoding($dockerfile, 'UTF-8', true) === false) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => [
+                        'dockerfile' => 'The dockerfile should be base64 encoded.',
+                    ],
+                ], 422);
+            }
+            $request->merge([
+                'dockerfile' => $dockerfile,
+            ]);
+        }
         $return = $this->validateDataApplications($request, $server);
         if ($return instanceof JsonResponse) {
             return $return;
@@ -3337,6 +3360,24 @@ class ApplicationsController extends Controller
                 'message' => 'Validation failed.',
                 'errors' => $errors,
             ], 422);
+        }
+
+        $githubApp = null;
+        if ($request->has('github_app_uuid')) {
+            if ($application->build_pack === 'dockerimage' || filled($application->dockerfile) || $application->deploymentType() === 'deploy_key') {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => [
+                        'github_app_uuid' => 'The github_app_uuid can only be changed for applications deployed from a GitHub App or public repository.',
+                    ],
+                ], 422);
+            }
+            $githubApp = GithubApp::where('uuid', $request->github_app_uuid)
+                ->where(fn ($query) => $query->where('team_id', $teamId)->orWhere('is_system_wide', true))
+                ->first();
+            if (! $githubApp?->isConnected()) {
+                return response()->json(['message' => 'Github App not found.'], 404);
+            }
         }
 
         $applicationSettings = $this->applicationSettingsFromRequest($request);
@@ -3592,6 +3633,12 @@ class ApplicationsController extends Controller
         $requestHasNoindexDomains = $request->has('noindex_domains');
         data_forget($data, 'noindex_domains');
         $application->fill($data);
+        if ($githubApp && ($application->source_id !== $githubApp->id || $application->source_type !== $githubApp->getMorphClass())) {
+            $application->source_id = $githubApp->id;
+            $application->source_type = $githubApp->getMorphClass();
+            // The next deployment fetches the repository ID from the new source.
+            $application->repository_project_id = null;
+        }
         if ($requestHasNoindexDomains) {
             // Must run after fqdn is filled: flags are kept only for domains the app still has.
             $application->setNoindexDomains($request->input('noindex_domains') ?? []);
@@ -3600,6 +3647,9 @@ class ApplicationsController extends Controller
             $application->custom_labels = str(implode('|coolify|', generateLabelsApplication($application)))->replace('|coolify|', "\n");
         }
         $application->withoutAuditLogging(fn () => $application->save());
+        if ($application->wasChanged('dockerfile')) {
+            $application->parseHealthcheckFromDockerfile($application->dockerfile);
+        }
         $dnsCleanup->queueReleaseOfRemovedHostnames($application, $previousDnsHostnames, (int) $teamId);
 
         auditLog('api.application.updated', [
