@@ -749,16 +749,21 @@ it('renders volume backup executions like database backup executions', function 
         'team_id' => $team->id,
         'frequency' => 'daily',
     ]);
+    $this->travelTo(Carbon::parse('2026-10-16 14:00:00', 'UTC'));
     ScheduledVolumeBackupExecution::create([
         'scheduled_volume_backup_id' => $backup->id,
         'status' => 'success',
         'filename' => '/data/coolify/backups/volumes/test/archive.tar.gz',
         'size' => 1024,
-        'finished_at' => now(),
+        'finished_at' => Carbon::parse('2026-10-16 14:30:05', 'UTC'),
     ]);
+    $this->travelTo(Carbon::parse('2026-10-16 18:00:00', 'UTC'));
 
     Livewire::test(VolumeBackups::class, ['storage' => $volume, 'resource' => $application, 'section' => 'executions'])
         ->assertSet('timezone', 'Europe/Budapest')
+        ->assertSee('2026-10-16 16:30:05 CEST')
+        ->assertSee('Started: 2026-10-16 16:00:00 CEST', false)
+        ->assertSee('3 hours ago')
         ->assertSeeInOrder([
             'Executions',
             'Status',
@@ -2964,3 +2969,22 @@ it('records a missed volume backup that is too old to run late as a failed execu
     Notification::assertSentToTimes($team, BackupFailed::class, 1);
     Notification::assertSentTo($team, BackupFailed::class, fn (BackupFailed $notification) => $notification->output === 'Skipped: the queued job did not start within 60 minutes.');
 });
+
+it('fails the volume archive only on fatal tar errors', function (int $tarExitCode, int $expectedExitCode) {
+    $bin = sys_get_temp_dir().'/volume-backup-tar-'.uniqid();
+    mkdir($bin);
+    file_put_contents($bin.'/tar', "#!/bin/sh\nexit {$tarExitCode}\n");
+    chmod($bin.'/tar', 0755);
+
+    $result = Process::env(['PATH' => $bin.':/usr/bin:/bin'])
+        ->run(['sh', '-c', VolumeBackupJob::archiveScript(50)]);
+
+    unlink($bin.'/tar');
+    rmdir($bin);
+
+    expect($result->exitCode())->toBe($expectedExitCode);
+})->with([
+    'success' => [0, 0],
+    'file changed as we read it' => [1, 0],
+    'fatal error' => [2, 2],
+]);
