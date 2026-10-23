@@ -48,23 +48,19 @@
             ->values())
         ->filter(fn ($items) => $items->isNotEmpty());
 
-    $pageSections = $database->type() === 'standalone-postgresql'
-        ? [
-            ['id' => 'database-details-section', 'label' => 'Database details'],
-            ['id' => 'credentials-section', 'label' => 'Credentials'],
-            ['id' => 'initialization-section', 'label' => 'Initialization'],
-            ['id' => 'runtime-network-section', 'label' => 'Runtime and network'],
-            ['id' => 'public-access-section', 'label' => 'Public access'],
-            ['id' => 'configuration-section', 'label' => 'Configuration'],
-            ['id' => 'log-delivery-section', 'label' => 'Log delivery'],
-            ['id' => 'initialization-scripts-section', 'label' => 'Initialization scripts'],
-        ]
-        : [];
+    $pageSections = array_values(array_filter([
+        ['id' => 'database-details-section', 'label' => 'Database details'],
+        $database->type() === 'standalone-sqlite' ? null : ['id' => 'access-section', 'label' => 'Access'],
+        ['id' => 'container-section', 'label' => 'Container'],
+        $database->type() === 'standalone-postgresql'
+            ? ['id' => 'initialization-scripts-section', 'label' => 'Initialization scripts']
+            : null,
+    ]));
 @endphp
 
 @php
     // The main sidebar shows this menu on wide screens (see components/navbar.blade.php).
-    registerMainNavContext(0, 'Dashboard', 'Back to the main menu');
+    registerMainNavContext(0, 'Dashboard', 'Back to the main menu', $database->name);
 @endphp
 
 {{-- Rendered twice: in the page (below xl), and teleported into the main sidebar (xl and up).

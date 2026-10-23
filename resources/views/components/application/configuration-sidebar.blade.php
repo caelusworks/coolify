@@ -193,13 +193,8 @@
             'project.application.configuration' => array_values(array_filter([
                 ['id' => 'application-details-section', 'label' => 'Application details'],
                 ['id' => 'access-section', 'label' => 'Access'],
-                ['id' => 'build-pipeline-section', 'label' => 'Build pipeline'],
-                $isComposeApp ? null : ['id' => 'container-image-section', 'label' => 'Container image'],
-                $isComposeApp ? null : ['id' => 'networking-section', 'label' => 'Networking'],
-                $isComposeApp ? null : ['id' => 'runtime-section', 'label' => 'Runtime'],
-                $isComposeApp ? null : ['id' => 'security-section', 'label' => 'Security'],
-                ['id' => 'deployment-lifecycle-section', 'label' => 'Deployment lifecycle'],
-                $isComposeApp ? null : ['id' => 'container-labels-section', 'label' => 'Container labels'],
+                ['id' => 'build-pipeline-section', 'label' => 'Build & deploy'],
+                $isComposeApp ? null : ['id' => 'container-section', 'label' => 'Container'],
             ])),
             'project.application.advanced' => array_values(array_filter([
                 ['id' => 'advanced-build-section', 'label' => 'Build'],
@@ -233,17 +228,8 @@
                 ],
                 ['id' => 'healthcheck-timing-section', 'label' => 'Timing and retries'],
             ],
-            'project.application.rollback' => [
-                ['id' => 'rollback-retention-section', 'label' => 'Image retention'],
-                ['id' => 'rollback-images-section', 'label' => 'Available images'],
-            ],
-            'project.application.resource-limits' => [
-                ['id' => 'cpu-limits-section', 'label' => 'CPU'],
-                ['id' => 'memory-limits-section', 'label' => 'Memory'],
-            ],
             'project.application.resource-operations' => [
-                ['id' => 'clone-destination-section', 'label' => 'Clone destination'],
-                ['id' => 'clone-environment-section', 'label' => 'Clone environment'],
+                ['id' => 'clone-resource-section', 'label' => 'Clone resource'],
                 ['id' => 'move-resource-section', 'label' => 'Move resource'],
             ],
         ];
@@ -254,7 +240,7 @@
 
 @php
     // The main sidebar shows this menu on wide screens (see components/navbar.blade.php).
-    registerMainNavContext(0, 'Dashboard', 'Back to the main menu');
+    registerMainNavContext(0, 'Dashboard', 'Back to the main menu', $application->name);
 @endphp
 
 {{-- Rendered twice: in the page (below xl), and teleported into the main sidebar (xl and up).
