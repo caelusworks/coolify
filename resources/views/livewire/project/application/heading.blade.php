@@ -1,5 +1,14 @@
 <nav wire:poll.10000ms="checkStatus" class="w-full max-w-none pb-4 md:pb-6 lg:pb-0">
     <div>
+        @if ($application->build_pack === 'nixpacks')
+            <x-callout type="warning" title="Nixpacks is deprecated" class="mb-4">
+                {{ config('deprecations.nixpacks') }}
+                <a class="underline" href="{{ route('project.application.configuration', $parameters) }}" {{ wireNavigate() }}>
+                    Switch to Railpack in General settings.
+                </a>
+            </x-callout>
+        @endif
+
         <div class="mb-3 w-full xl:hidden">
             <div class="flex min-w-0 flex-col items-start gap-2">
                 <h1 class="min-w-0 max-w-full truncate text-[24px]! leading-7! font-semibold! tracking-tight! text-black dark:text-fg">
