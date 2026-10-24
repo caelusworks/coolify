@@ -133,6 +133,8 @@ class Server extends BaseModel
 
     public const PLACEHOLDER_IPS = [self::PLACEHOLDER_IP, '0.0.0.0', '::'];
 
+    protected array $auditExclude = ['canvas_position'];
+
     /**
      * Serves the proxy error pages (503.html) for the Traefik and Caddy catch-all.
      */
@@ -340,6 +342,7 @@ class Server extends BaseModel
         'delete_unused_networks' => 'boolean',
         'force_disabled' => 'boolean',
         'sentinel_waiting_since' => 'datetime',
+        'canvas_position' => 'array',
     ];
 
     /**
@@ -413,6 +416,10 @@ class Server extends BaseModel
      */
     public function backfillPlaceholderIp(?string $ip): bool
     {
+        if ($this->isTransferredAway()) {
+            return false;
+        }
+
         $ip = blank($ip) ? null : self::normalizeIp($ip);
         if (self::isPlaceholderIp($ip)) {
             return false;
@@ -457,6 +464,11 @@ class Server extends BaseModel
 
     public function refreshHetznerState(): ?string
     {
+        // Another instance manages the cloud server of an archive; keep the stored status.
+        if ($this->isTransferredAway()) {
+            return $this->hetzner_server_status;
+        }
+
         if (! $this->hetzner_server_id || ! $this->cloudProviderToken || $this->cloudProviderToken->provider !== 'hetzner') {
             return $this->hetzner_server_status;
         }
@@ -478,6 +490,11 @@ class Server extends BaseModel
 
     public function refreshVultrState(): ?string
     {
+        // Another instance manages the cloud server of an archive; keep the stored status.
+        if ($this->isTransferredAway()) {
+            return $this->vultr_instance_status;
+        }
+
         if (! $this->vultr_instance_id || ! $this->cloudProviderToken) {
             return null;
         }
@@ -514,6 +531,11 @@ class Server extends BaseModel
 
     public function refreshDigitalOceanState(): ?string
     {
+        // Another instance manages the cloud server of an archive; keep the stored status.
+        if ($this->isTransferredAway()) {
+            return $this->digitalocean_droplet_status;
+        }
+
         if (! $this->digitalocean_droplet_id || ! $this->cloudProviderToken || $this->cloudProviderToken->provider !== 'digitalocean') {
             return $this->digitalocean_droplet_status;
         }
@@ -555,6 +577,11 @@ class Server extends BaseModel
 
     public function refreshHostingerState(): ?string
     {
+        // Another instance manages the cloud server of an archive; keep the stored status.
+        if ($this->isTransferredAway()) {
+            return $this->hostinger_virtual_machine_status;
+        }
+
         if (! $this->hostinger_virtual_machine_id || ! $this->cloudProviderToken || $this->cloudProviderToken->provider !== 'hostinger') {
             return $this->hostinger_virtual_machine_status;
         }
@@ -1331,6 +1358,16 @@ $siteAddress {
     public function scopeWithProxy(): Builder
     {
         return $this->proxy->modelScope();
+    }
+
+    /**
+     * Servers that this instance manages. A transferred server is only an archive and does not use a server slot.
+     */
+    public function scopeNotTransferredAway(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $query) => $query
+            ->whereNull('server_metadata->transfer->status')
+            ->orWhere('server_metadata->transfer->status', '!=', 'transferred'));
     }
 
     public function scopeWhereProxyType(Builder $query, string $proxyType): Builder
@@ -2530,13 +2567,11 @@ $siteAddress {
     public function validateDockerEngineVersion()
     {
         $dockerVersionRaw = instant_remote_process(['docker version --format json'], $this, false);
-        $dockerVersionJson = json_decode($dockerVersionRaw, true);
-        $dockerVersion = data_get($dockerVersionJson, 'Server.Version', '0.0.0');
-        $this->rememberDockerVersion(is_string($dockerVersion) ? $dockerVersion : null);
+        $dockerVersion = dockerEngineVersionFromJson($dockerVersionRaw);
+        $this->rememberDockerVersion($dockerVersion);
         $composeVersionRaw = instant_remote_process(['docker compose version --short'], $this, false);
         $this->rememberComposeVersion(is_string($composeVersionRaw) ? $composeVersionRaw : null);
-        $dockerVersion = checkMinimumDockerEngineVersion($dockerVersion);
-        if (is_null($dockerVersion)) {
+        if (is_null(checkMinimumDockerEngineVersion($dockerVersion))) {
             $this->settings->is_usable = false;
             $this->settings->save();
 
@@ -2548,6 +2583,25 @@ $siteAddress {
         ServerReachabilityChanged::dispatch($this);
 
         return true;
+    }
+
+    /**
+     * Explains why validateDockerEngineVersion() failed: the version could not be read, or it is too old.
+     */
+    public function dockerEngineVersionError(): string
+    {
+        $requiredVersion = str(config('constants.docker.minimum_required_version'))->before('.');
+        $documentation = '<a target="_blank" class="underline" href="https://docs.docker.com/engine/install/#server">documentation</a>';
+        $dockerVersion = $this->dockerVersion();
+
+        if (is_null($dockerVersion)) {
+            $command = $this->isNonRoot() ? 'sudo docker version --format json' : 'docker version --format json';
+            $user = e($this->user);
+
+            return "Coolify could not read the Docker Engine version. Run \"{$command}\" on the server as the {$user} user. It must exit without an error and print only JSON. Text from shell startup files (for example ~/.bashrc) breaks the output.";
+        }
+
+        return "Docker Engine {$dockerVersion} is installed, but Coolify needs version {$requiredVersion} or newer. Please upgrade Docker: {$documentation}.";
     }
 
     public function validateCoolifyNetwork($isSwarm = false, $isBuildServer = false)

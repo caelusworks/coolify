@@ -26,6 +26,7 @@
 - Do not symlink `vendor` into another worktree. Composer resolves the base path from the real `vendor` path, so the tests load the app classes of the other checkout. Run `composer install --ignore-platform-req=ext-zip` in the worktree.
 - To assert that the unsaved-changes bar shows, check `el.classList.contains('is-dirty')`. Playwright treats the hidden bar (`opacity-0`) as visible, and its class attribute always contains the text `is-dirty` from Tailwind variants.
 - Do not call `sleep()` in a browser test. The app server runs in the test process, so `sleep()` stops it; use `$page->wait()`.
+- `Queue::fake()` also captures `dispatchSync()` of a `ShouldQueue` job, so the job never runs. Fake only the jobs to block (`Queue::fake([SomeJob::class])`).
 - In tests, turning on `is_metrics_enabled` (and other Sentinel settings) with `save()`/`update()` runs the settings hook, which starts Sentinel over a real SSH connection on the sync queue. Use `saveQuietly()` or `Queue::fake()`.
 - Call `visit()` directly in each `tests/v4/Browser` test body; Pest does not mark a test that only uses helper-wrapped `visit()` as a browser test, so it fails with `sendText() on null`.
 - SQLite returns `0`/`1` for boolean columns without a `boolean` cast, while Postgres returns real booleans. A strict `=== false` check on such a column never matches in tests, so tests can pass on behavior that Postgres blocks. Add the cast or compare loosely.
@@ -106,6 +107,9 @@
 - Host test runs share `storage/` with the dev container. Fake the `ssh-keys`/`ssh-mux` disks and `Process` in tests that run seeders or write SSH files, or the test deletes/chowns the dev instance's SSH keys and SSH breaks for `www-data`.
 - Dev QEMU servers from `dev:qemu` are seeded, not validated: they have no `coolify` Docker network, and Alpine has no bash until `InstallPrerequisites` runs.
 
+## Report failures of queued actions
+- A value that an action returns when it runs as a queued job (`::dispatch()`) goes nowhere. Do not report a failure only with a return string or `throwError: false`; log it and broadcast it to the page that started the action.
+
 ## Format only your own files
 - `pint --dirty` also rewrites uncommitted files that belong to other work in the tree. When the tree has unrelated changes, pass your changed paths to Pint.
 
@@ -135,3 +139,6 @@
 
 ## Session writes are last-writer-wins
 - Laravel saves the whole session payload at the end of every request, and pages run concurrent `wire:poll` requests. A value that one request changes can be overwritten by a request that started earlier. `KeepConcurrentTeamSwitch` protects `currentTeam`; protect any new session value that changes mid-session the same way, or keep it out of the session.
+
+## Keep `:has()` off page-wide ancestors
+- A `:has()` on `html`, `body`, `.app-shell`, or a sibling of `<main>` (for example `html:has(.x) .y`) makes Chrome restyle the page on every DOM change. Chart libraries read layout many times per render, so one ApexCharts render took ~400 ms and blocked navigation. Use a class set by the Blade layout instead, and keep `:has()` on small, local subjects.
