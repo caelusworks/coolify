@@ -1893,7 +1893,7 @@ $siteAddress {
             ->concat($dragonflies)
             ->concat($clickhouses)
             ->concat($sqlites)
-            ->filter(fn ($item) => data_get($item, 'name') !== 'coolify-db');
+            ->reject(fn ($item) => $item instanceof StandalonePostgresql && $item->isInstanceDatabase());
     }
 
     public function applications()
@@ -2122,6 +2122,30 @@ $siteAddress {
         }
 
         return true;
+    }
+
+    /**
+     * Marks a proxy start or restart as running, so status checks do not start a second proxy meanwhile.
+     * ProxyStatusChangedNotification clears the mark when the start or restart finishes.
+     */
+    public function markProxyTransitionStarted(): void
+    {
+        Cache::put($this->proxyTransitionCacheKey(), true, now()->addMinutes(5));
+    }
+
+    public function markProxyTransitionFinished(): void
+    {
+        Cache::forget($this->proxyTransitionCacheKey());
+    }
+
+    public function isProxyTransitionInProgress(): bool
+    {
+        return Cache::has($this->proxyTransitionCacheKey());
+    }
+
+    private function proxyTransitionCacheKey(): string
+    {
+        return "proxy-transition:{$this->uuid}";
     }
 
     public function skipServer()

@@ -56,6 +56,7 @@ class ApplicationsController extends Controller
         'include_coolify_default_variables',
         'is_pr_deployments_public_enabled',
         'stop_grace_period',
+        'rolling_update_drain_seconds',
         'docker_images_to_keep',
         'is_gzip_enabled',
         'is_stripprefix_enabled',
@@ -151,7 +152,12 @@ class ApplicationsController extends Controller
             $application->settings?->makeHidden(['id', 'application_id', 'created_at', 'updated_at']);
         }
 
-        return serializeApiResponse($application);
+        $payload = serializeApiResponse($application);
+        if ($application instanceof Application && filled(data_get($payload, 'docker_compose'))) {
+            $payload['docker_compose'] = redactLockedValuesInGeneratedCompose($payload['docker_compose'], $application);
+        }
+
+        return $payload;
     }
 
     /**
@@ -468,6 +474,7 @@ class ApplicationsController extends Controller
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
                             'is_pr_deployments_public_enabled' => ['type' => 'boolean', 'description' => 'Make pull request deployments public.'],
                             'stop_grace_period' => ['type' => 'integer', 'nullable' => true, 'minimum' => 1, 'maximum' => 3600, 'description' => 'Container stop grace period in seconds.'],
+                            'rolling_update_drain_seconds' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 300, 'description' => 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'],
                             'docker_images_to_keep' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100, 'description' => 'Number of Docker images to retain.'],
                             'is_gzip_enabled' => ['type' => 'boolean', 'description' => 'Enable gzip compression.'],
                             'is_stripprefix_enabled' => ['type' => 'boolean', 'description' => 'Enable path prefix stripping.'],
@@ -677,6 +684,7 @@ class ApplicationsController extends Controller
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
                             'is_pr_deployments_public_enabled' => ['type' => 'boolean', 'description' => 'Make pull request deployments public.'],
                             'stop_grace_period' => ['type' => 'integer', 'nullable' => true, 'minimum' => 1, 'maximum' => 3600, 'description' => 'Container stop grace period in seconds.'],
+                            'rolling_update_drain_seconds' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 300, 'description' => 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'],
                             'docker_images_to_keep' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100, 'description' => 'Number of Docker images to retain.'],
                             'is_gzip_enabled' => ['type' => 'boolean', 'description' => 'Enable gzip compression.'],
                             'is_stripprefix_enabled' => ['type' => 'boolean', 'description' => 'Enable path prefix stripping.'],
@@ -886,6 +894,7 @@ class ApplicationsController extends Controller
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
                             'is_pr_deployments_public_enabled' => ['type' => 'boolean', 'description' => 'Make pull request deployments public.'],
                             'stop_grace_period' => ['type' => 'integer', 'nullable' => true, 'minimum' => 1, 'maximum' => 3600, 'description' => 'Container stop grace period in seconds.'],
+                            'rolling_update_drain_seconds' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 300, 'description' => 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'],
                             'docker_images_to_keep' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100, 'description' => 'Number of Docker images to retain.'],
                             'is_gzip_enabled' => ['type' => 'boolean', 'description' => 'Enable gzip compression.'],
                             'is_stripprefix_enabled' => ['type' => 'boolean', 'description' => 'Enable path prefix stripping.'],
@@ -1065,6 +1074,7 @@ class ApplicationsController extends Controller
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
                             'is_pr_deployments_public_enabled' => ['type' => 'boolean', 'description' => 'Make pull request deployments public.'],
                             'stop_grace_period' => ['type' => 'integer', 'nullable' => true, 'minimum' => 1, 'maximum' => 3600, 'description' => 'Container stop grace period in seconds.'],
+                            'rolling_update_drain_seconds' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 300, 'description' => 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'],
                             'docker_images_to_keep' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100, 'description' => 'Number of Docker images to retain.'],
                             'is_gzip_enabled' => ['type' => 'boolean', 'description' => 'Enable gzip compression.'],
                             'is_stripprefix_enabled' => ['type' => 'boolean', 'description' => 'Enable path prefix stripping.'],
@@ -1240,6 +1250,7 @@ class ApplicationsController extends Controller
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
                             'is_pr_deployments_public_enabled' => ['type' => 'boolean', 'description' => 'Make pull request deployments public.'],
                             'stop_grace_period' => ['type' => 'integer', 'nullable' => true, 'minimum' => 1, 'maximum' => 3600, 'description' => 'Container stop grace period in seconds.'],
+                            'rolling_update_drain_seconds' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 300, 'description' => 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'],
                             'docker_images_to_keep' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100, 'description' => 'Number of Docker images to retain.'],
                             'is_gzip_enabled' => ['type' => 'boolean', 'description' => 'Enable gzip compression.'],
                             'is_stripprefix_enabled' => ['type' => 'boolean', 'description' => 'Enable path prefix stripping.'],
@@ -3261,6 +3272,7 @@ class ApplicationsController extends Controller
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
                             'is_pr_deployments_public_enabled' => ['type' => 'boolean', 'description' => 'Make pull request deployments public.'],
                             'stop_grace_period' => ['type' => 'integer', 'nullable' => true, 'minimum' => 1, 'maximum' => 3600, 'description' => 'Container stop grace period in seconds.'],
+                            'rolling_update_drain_seconds' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 300, 'description' => 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'],
                             'docker_images_to_keep' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100, 'description' => 'Number of Docker images to retain.'],
                             'is_gzip_enabled' => ['type' => 'boolean', 'description' => 'Enable gzip compression.'],
                             'is_stripprefix_enabled' => ['type' => 'boolean', 'description' => 'Enable path prefix stripping.'],
@@ -4040,95 +4052,28 @@ class ApplicationsController extends Controller
             ], 422);
         }
         $is_preview = $request->is_preview ?? false;
-        $is_literal = $request->is_literal ?? false;
         $key = str($request->key)->trim()->replace(' ', '_')->value;
-        if ($is_preview) {
-            $env = $application->environment_variables_preview->where('key', $key)->first();
-            if ($env) {
-                $env->value = $request->value;
-                if ($env->is_literal != $is_literal) {
-                    $env->is_literal = $is_literal;
-                }
-                if ($env->is_preview != $is_preview) {
-                    $env->is_preview = $is_preview;
-                }
-                if ($env->is_multiline != $request->is_multiline) {
-                    $env->is_multiline = $request->is_multiline;
-                }
-                if ($env->is_shown_once != $request->is_shown_once) {
-                    $env->is_shown_once = $request->is_shown_once;
-                }
-                if ($request->has('is_runtime') && $env->is_runtime != $request->is_runtime) {
-                    $env->is_runtime = $request->is_runtime;
-                }
-                if ($request->has('is_buildtime') && $env->is_buildtime != $request->is_buildtime) {
-                    $env->is_buildtime = $request->is_buildtime;
-                }
-                if ($request->has('comment') && $env->comment != $request->comment) {
-                    $env->comment = $request->comment;
-                }
-                $env->save();
-
-                auditLog('api.application.env_updated', [
-                    'team_id' => $teamId,
-                    'application_uuid' => $application->uuid,
-                    'env_uuid' => $env->uuid,
-                    'env_key' => $env->key,
-                    'is_preview' => (bool) $is_preview,
-                ]);
-
-                return response()->json($this->removeSensitiveData($env))->setStatusCode(201);
-            } else {
-                return response()->json([
-                    'message' => 'Environment variable not found.',
-                ], 404);
-            }
-        } else {
-            $env = $application->environment_variables->where('key', $key)->first();
-            if ($env) {
-                $env->value = $request->value;
-                if ($env->is_literal != $is_literal) {
-                    $env->is_literal = $is_literal;
-                }
-                if ($env->is_preview != $is_preview) {
-                    $env->is_preview = $is_preview;
-                }
-                if ($env->is_multiline != $request->is_multiline) {
-                    $env->is_multiline = $request->is_multiline;
-                }
-                if ($env->is_shown_once != $request->is_shown_once) {
-                    $env->is_shown_once = $request->is_shown_once;
-                }
-                if ($request->has('is_runtime') && $env->is_runtime != $request->is_runtime) {
-                    $env->is_runtime = $request->is_runtime;
-                }
-                if ($request->has('is_buildtime') && $env->is_buildtime != $request->is_buildtime) {
-                    $env->is_buildtime = $request->is_buildtime;
-                }
-                if ($request->has('comment') && $env->comment != $request->comment) {
-                    $env->comment = $request->comment;
-                }
-                $env->save();
-
-                auditLog('api.application.env_updated', [
-                    'team_id' => $teamId,
-                    'application_uuid' => $application->uuid,
-                    'env_uuid' => $env->uuid,
-                    'env_key' => $env->key,
-                    'is_preview' => (bool) $is_preview,
-                ]);
-
-                return response()->json($this->removeSensitiveData($env))->setStatusCode(201);
-            } else {
-                return response()->json([
-                    'message' => 'Environment variable not found.',
-                ], 404);
-            }
+        $environmentVariables = $is_preview ? $application->environment_variables_preview : $application->environment_variables;
+        $env = $environmentVariables->where('key', $key)->first();
+        if (! $env) {
+            return response()->json([
+                'message' => 'Environment variable not found.',
+            ], 404);
         }
 
-        return response()->json([
-            'message' => 'Something is not okay. Are you okay?',
-        ], 500);
+        $env->value = $request->value;
+        $env->fill($request->only(['is_literal', 'is_multiline', 'is_shown_once', 'is_runtime', 'is_buildtime', 'comment']));
+        $env->save();
+
+        auditLog('api.application.env_updated', [
+            'team_id' => $teamId,
+            'application_uuid' => $application->uuid,
+            'env_uuid' => $env->uuid,
+            'env_key' => $env->key,
+            'is_preview' => (bool) $is_preview,
+        ]);
+
+        return response()->json($this->removeSensitiveData($env))->setStatusCode(201);
     }
 
     #[OA\Patch(
@@ -4273,25 +4218,7 @@ class ApplicationsController extends Controller
                 $env = $application->environment_variables_preview()->where('key', $key)->first();
                 if ($env) {
                     $env->value = $item->get('value');
-
-                    if ($env->is_literal != $is_literal) {
-                        $env->is_literal = $is_literal;
-                    }
-                    if ($env->is_multiline != $item->get('is_multiline')) {
-                        $env->is_multiline = $item->get('is_multiline');
-                    }
-                    if ($env->is_shown_once != $item->get('is_shown_once')) {
-                        $env->is_shown_once = $item->get('is_shown_once');
-                    }
-                    if ($item->has('is_runtime') && $env->is_runtime != $item->get('is_runtime')) {
-                        $env->is_runtime = $item->get('is_runtime');
-                    }
-                    if ($item->has('is_buildtime') && $env->is_buildtime != $item->get('is_buildtime')) {
-                        $env->is_buildtime = $item->get('is_buildtime');
-                    }
-                    if ($item->has('comment') && $env->comment != $item->get('comment')) {
-                        $env->comment = $item->get('comment');
-                    }
+                    $env->fill($item->only(['is_literal', 'is_multiline', 'is_shown_once', 'is_runtime', 'is_buildtime', 'comment'])->all());
                     $env->save();
                 } else {
                     $env = $application->environment_variables()->create([
@@ -4312,24 +4239,7 @@ class ApplicationsController extends Controller
                 $env = $application->environment_variables()->where('key', $key)->first();
                 if ($env) {
                     $env->value = $item->get('value');
-                    if ($env->is_literal != $is_literal) {
-                        $env->is_literal = $is_literal;
-                    }
-                    if ($env->is_multiline != $item->get('is_multiline')) {
-                        $env->is_multiline = $item->get('is_multiline');
-                    }
-                    if ($env->is_shown_once != $item->get('is_shown_once')) {
-                        $env->is_shown_once = $item->get('is_shown_once');
-                    }
-                    if ($item->has('is_runtime') && $env->is_runtime != $item->get('is_runtime')) {
-                        $env->is_runtime = $item->get('is_runtime');
-                    }
-                    if ($item->has('is_buildtime') && $env->is_buildtime != $item->get('is_buildtime')) {
-                        $env->is_buildtime = $item->get('is_buildtime');
-                    }
-                    if ($item->has('comment') && $env->comment != $item->get('comment')) {
-                        $env->comment = $item->get('comment');
-                    }
+                    $env->fill($item->only(['is_literal', 'is_multiline', 'is_shown_once', 'is_runtime', 'is_buildtime', 'comment'])->all());
                     $env->save();
                 } else {
                     $env = $application->environment_variables()->create([

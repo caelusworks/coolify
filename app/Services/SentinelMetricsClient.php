@@ -81,6 +81,10 @@ class SentinelMetricsClient
             return [];
         }
 
+        // Sentinel keeps the last samples of a removed container until retention deletes them,
+        // but only a container that Docker still lists has a status.
+        $running = array_filter($rows, fn ($c) => ($c['status']['state'] ?? null) === 'running');
+
         return array_values(array_map(function ($c) {
             $disk = ($c['disk']['writableLayer'] ?? 0) + ($c['disk']['volumesTotal'] ?? 0);
             $net = ($c['network']['rxBytesPerSec'] ?? 0) + ($c['network']['txBytesPerSec'] ?? 0);
@@ -93,7 +97,7 @@ class SentinelMetricsClient
                 'diskBytes' => isset($c['disk']) ? (int) $disk : null,
                 'net' => isset($c['network']) ? (float) $net : null,
             ];
-        }, $rows));
+        }, $running));
     }
 
     /**
@@ -225,7 +229,9 @@ class SentinelMetricsClient
             ["docker exec coolify-sentinel sh -c 'curl -s --max-time 10 -H \"Authorization: Bearer {$token}\" \"{$url}\"'"],
             $this->server,
             false,
-            timeout: 15
+            timeout: 15,
+            // Metrics are read again on the next refresh. SSH retries would keep a worker past its timeout.
+            maxAttempts: 1
         );
     }
 

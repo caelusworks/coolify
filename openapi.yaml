@@ -594,6 +594,11 @@ paths:
                   minimum: 1
                   maximum: 3600
                   description: 'Container stop grace period in seconds.'
+                rolling_update_drain_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 300
+                  description: 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'
                 docker_images_to_keep:
                   type: integer
                   minimum: 0
@@ -1027,6 +1032,11 @@ paths:
                   minimum: 1
                   maximum: 3600
                   description: 'Container stop grace period in seconds.'
+                rolling_update_drain_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 300
+                  description: 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'
                 docker_images_to_keep:
                   type: integer
                   minimum: 0
@@ -1460,6 +1470,11 @@ paths:
                   minimum: 1
                   maximum: 3600
                   description: 'Container stop grace period in seconds.'
+                rolling_update_drain_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 300
+                  description: 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'
                 docker_images_to_keep:
                   type: integer
                   minimum: 0
@@ -1830,6 +1845,11 @@ paths:
                   minimum: 1
                   maximum: 3600
                   description: 'Container stop grace period in seconds.'
+                rolling_update_drain_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 300
+                  description: 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'
                 docker_images_to_keep:
                   type: integer
                   minimum: 0
@@ -2186,6 +2206,11 @@ paths:
                   minimum: 1
                   maximum: 3600
                   description: 'Container stop grace period in seconds.'
+                rolling_update_drain_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 300
+                  description: 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'
                 docker_images_to_keep:
                   type: integer
                   minimum: 0
@@ -2709,6 +2734,11 @@ paths:
                   minimum: 1
                   maximum: 3600
                   description: 'Container stop grace period in seconds.'
+                rolling_update_drain_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 300
+                  description: 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off. Default: 5.'
                 docker_images_to_keep:
                   type: integer
                   minimum: 0
@@ -12946,14 +12976,6 @@ paths:
           schema:
             type: boolean
             default: true
-        -
-          name: delete_from_coolify_only
-          in: query
-          description: 'Remove only Coolify metadata without deleting Docker resources.'
-          required: false
-          schema:
-            type: boolean
-            default: false
       responses:
         '200':
           description: 'Delete a service by UUID'
@@ -12971,6 +12993,8 @@ paths:
           $ref: '#/components/responses/404'
         '403':
           description: 'The token needs the write and deploy permissions.'
+        '422':
+          $ref: '#/components/responses/422'
       security:
         -
           bearerAuth: []
@@ -16045,6 +16069,9 @@ components:
         stop_grace_period:
           type: integer
           nullable: true
+        rolling_update_drain_seconds:
+          type: integer
+          description: 'Seconds to wait after the new container is healthy before old containers stop during a rolling update. 0 turns the wait off.'
       type: object
     Environment:
       description: 'Environment model'
