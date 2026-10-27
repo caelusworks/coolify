@@ -381,7 +381,7 @@ class ApplicationsController extends Controller
                     mediaType: 'application/json',
                     schema: new OA\Schema(
                         type: 'object',
-                        required: ['project_uuid', 'server_uuid', 'environment_name', 'environment_uuid', 'git_repository', 'git_branch', 'build_pack'],
+                        required: ['project_uuid', 'server_uuid', 'git_repository', 'git_branch', 'build_pack'],
                         properties: [
                             'project_uuid' => ['type' => 'string', 'description' => 'The project UUID.'],
                             'server_uuid' => ['type' => 'string', 'description' => 'The server UUID.'],
@@ -591,7 +591,7 @@ class ApplicationsController extends Controller
                     mediaType: 'application/json',
                     schema: new OA\Schema(
                         type: 'object',
-                        required: ['project_uuid', 'server_uuid', 'environment_name', 'environment_uuid', 'github_app_uuid', 'git_repository', 'git_branch', 'build_pack'],
+                        required: ['project_uuid', 'server_uuid', 'github_app_uuid', 'git_repository', 'git_branch', 'build_pack'],
                         properties: [
                             'project_uuid' => ['type' => 'string', 'description' => 'The project UUID.'],
                             'server_uuid' => ['type' => 'string', 'description' => 'The server UUID.'],
@@ -801,7 +801,7 @@ class ApplicationsController extends Controller
                     mediaType: 'application/json',
                     schema: new OA\Schema(
                         type: 'object',
-                        required: ['project_uuid', 'server_uuid', 'environment_name', 'environment_uuid', 'private_key_uuid', 'git_repository', 'git_branch', 'build_pack'],
+                        required: ['project_uuid', 'server_uuid', 'private_key_uuid', 'git_repository', 'git_branch', 'build_pack'],
                         properties: [
                             'project_uuid' => ['type' => 'string', 'description' => 'The project UUID.'],
                             'server_uuid' => ['type' => 'string', 'description' => 'The server UUID.'],
@@ -1011,7 +1011,7 @@ class ApplicationsController extends Controller
                     mediaType: 'application/json',
                     schema: new OA\Schema(
                         type: 'object',
-                        required: ['project_uuid', 'server_uuid', 'environment_name', 'environment_uuid', 'dockerfile'],
+                        required: ['project_uuid', 'server_uuid', 'dockerfile'],
                         properties: [
                             'project_uuid' => ['type' => 'string', 'description' => 'The project UUID.'],
                             'server_uuid' => ['type' => 'string', 'description' => 'The server UUID.'],
@@ -1190,7 +1190,7 @@ class ApplicationsController extends Controller
                     mediaType: 'application/json',
                     schema: new OA\Schema(
                         type: 'object',
-                        required: ['project_uuid', 'server_uuid', 'environment_name', 'environment_uuid', 'docker_registry_image_name'],
+                        required: ['project_uuid', 'server_uuid', 'docker_registry_image_name'],
                         properties: [
                             'project_uuid' => ['type' => 'string', 'description' => 'The project UUID.'],
                             'server_uuid' => ['type' => 'string', 'description' => 'The server UUID.'],
@@ -2395,7 +2395,7 @@ class ApplicationsController extends Controller
             ]))->setStatusCode(201);
         } elseif ($type === 'dockerimage') {
             $validationRules = [
-                'docker_registry_image_name' => ['required', 'string', 'max:255', new DockerImageFormat],
+                'docker_registry_image_name' => ['required', 'string', 'max:255', new DockerImageFormat(allowVariableTag: true)],
                 'docker_registry_image_tag' => ValidationPatterns::dockerImageTagRules(),
                 'ports_exposes' => 'string|regex:/^(\d+)(,\d+)*$/|nullable',
             ];
@@ -4070,7 +4070,9 @@ class ApplicationsController extends Controller
             ], 404);
         }
 
-        $env->value = $request->value;
+        if ($request->has('value')) {
+            $env->value = $request->value;
+        }
         $env->fill($request->only(['is_literal', 'is_multiline', 'is_shown_once', 'is_runtime', 'is_buildtime', 'comment']));
         $env->save();
 
@@ -4226,7 +4228,9 @@ class ApplicationsController extends Controller
             if ($is_preview) {
                 $env = $application->environment_variables_preview()->where('key', $key)->first();
                 if ($env) {
-                    $env->value = $item->get('value');
+                    if ($item->has('value')) {
+                        $env->value = $item->get('value');
+                    }
                     $env->fill($item->only(['is_literal', 'is_multiline', 'is_shown_once', 'is_runtime', 'is_buildtime', 'comment'])->all());
                     $env->save();
                 } else {
@@ -4247,7 +4251,9 @@ class ApplicationsController extends Controller
             } else {
                 $env = $application->environment_variables()->where('key', $key)->first();
                 if ($env) {
-                    $env->value = $item->get('value');
+                    if ($item->has('value')) {
+                        $env->value = $item->get('value');
+                    }
                     $env->fill($item->only(['is_literal', 'is_multiline', 'is_shown_once', 'is_runtime', 'is_buildtime', 'comment'])->all());
                     $env->save();
                 } else {
@@ -5177,7 +5183,7 @@ class ApplicationsController extends Controller
 
     #[OA\Patch(
         summary: 'Update Storage',
-        description: 'Update a persistent storage or file storage by application UUID.',
+        description: 'Update a persistent storage or file storage by application UUID. Changed file content is saved right away and written to the server in the background, so a failed write does not change the response.',
         path: '/applications/{uuid}/storages',
         operationId: 'update-storage-by-application-uuid',
         security: [
