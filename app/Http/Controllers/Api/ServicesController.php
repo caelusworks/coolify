@@ -22,6 +22,7 @@ use App\Support\ValidationPatterns;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Validator;
 use OpenApi\Attributes as OA;
@@ -993,13 +994,6 @@ class ServicesController extends Controller
             return response()->json(['message' => 'Container not found.'], 404);
         }
 
-        $status = getContainerStatus($service->destination->server, $container['Names']);
-        if ($status !== 'running') {
-            return response()->json([
-                'message' => 'Container is not running.',
-            ], 400);
-        }
-
         $lines = normalizeLogLines($request->query('lines'));
         $showTimestamps = parseLogTimestampFlag($request->query('show_timestamps'));
         $logs = sanitizeLogsForExport(
@@ -1702,6 +1696,7 @@ class ServicesController extends Controller
 
         $updatedEnvs = collect();
         foreach ($bulk_data as $item) {
+            $item = Arr::only($item, ['key', 'value', 'is_literal', 'is_multiline', 'is_shown_once', 'comment']);
             if (array_key_exists('key', $item)) {
                 $item['key'] = ValidationPatterns::normalizeEnvironmentVariableKey((string) $item['key']);
             }
@@ -3344,7 +3339,7 @@ class ServicesController extends Controller
         $uuid = new_public_id();
         $name = $request->filled('name')
             ? $request->string('name')->toString()
-            : $service->name.'-clone-'.$uuid;
+            : clone_resource_name($service->name, $uuid);
         $cloneVolumeData = $request->boolean('clone_volumes', false);
 
         $newService = clone_service($service, $destination, [

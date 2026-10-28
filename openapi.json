@@ -4343,7 +4343,7 @@
                     {
                         "name": "service_name",
                         "in": "query",
-                        "description": "Return logs only from the container of the Docker Compose service with this name. Returns 404 when no running container matches.",
+                        "description": "Return logs only from the container of the Docker Compose service with this name. Returns 404 when no container matches. Stopped containers are included.",
                         "required": false,
                         "schema": {
                             "type": "string"
@@ -4447,7 +4447,7 @@
                     {
                         "name": "service_name",
                         "in": "query",
-                        "description": "Return logs only from the container of the Docker Compose service with this name. Returns 404 when no running container matches.",
+                        "description": "Return logs only from the container of the Docker Compose service with this name. Returns 404 when no container matches. Stopped containers are included.",
                         "required": false,
                         "schema": {
                             "type": "string"
@@ -11529,6 +11529,9 @@
                     },
                     "429": {
                         "description": "DigitalOcean rate limit exceeded."
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -12567,6 +12570,9 @@
                     },
                     "404": {
                         "$ref": "#\/components\/responses\/404"
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -12582,9 +12588,18 @@
                     "Hetzner"
                 ],
                 "summary": "Get Hetzner Server Types",
-                "description": "Get all available Hetzner server types (instance sizes).",
+                "description": "Get the Hetzner server types (instance sizes) that can be ordered now. Each type lists only the locations where it is in stock and not deprecated.",
                 "operationId": "get-hetzner-server-types",
                 "parameters": [
+                    {
+                        "name": "location",
+                        "in": "query",
+                        "description": "Return only the server types that can be ordered in this location, for example nbg1.",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
                     {
                         "name": "cloud_provider_token_uuid",
                         "in": "query",
@@ -12678,6 +12693,9 @@
                     },
                     "404": {
                         "$ref": "#\/components\/responses\/404"
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -12758,6 +12776,9 @@
                     },
                     "404": {
                         "$ref": "#\/components\/responses\/404"
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -12829,6 +12850,9 @@
                     },
                     "404": {
                         "$ref": "#\/components\/responses\/404"
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -12894,6 +12918,9 @@
                     },
                     "404": {
                         "$ref": "#\/components\/responses\/404"
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -12962,6 +12989,9 @@
                     },
                     "404": {
                         "$ref": "#\/components\/responses\/404"
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -13071,7 +13101,7 @@
                                     "instant_validate": {
                                         "type": "boolean",
                                         "example": false,
-                                        "description": "Validate server immediately after creation"
+                                        "description": "Validate the server and install Docker when it is running. Defaults to true for tokens with the deploy permission, and needs that permission."
                                     }
                                 },
                                 "type": "object"
@@ -13122,6 +13152,9 @@
                     },
                     "429": {
                         "$ref": "#\/components\/responses\/429"
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -17139,6 +17172,12 @@
                                                 "null"
                                             ]
                                         },
+                                        "logdrain_axiom_domain": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ]
+                                        },
                                         "logdrain_axiom_api_key": {
                                             "description": "Only present with read:sensitive.",
                                             "type": "string"
@@ -17235,6 +17274,10 @@
                                         "type": "boolean"
                                     },
                                     "logdrain_axiom_dataset_name": {
+                                        "type": "string"
+                                    },
+                                    "logdrain_axiom_domain": {
+                                        "description": "Base domain of the Axiom edge deployment. Default: us-east-1.aws.edge.axiom.co. Use eu-central-1.aws.edge.axiom.co for EU datasets.",
                                         "type": "string"
                                     },
                                     "logdrain_axiom_api_key": {
@@ -24009,6 +24052,9 @@
                     },
                     "429": {
                         "description": "Vultr API rate limit exceeded."
+                    },
+                    "502": {
+                        "$ref": "#\/components\/responses\/502"
                     }
                 },
                 "security": [
@@ -26007,6 +26053,10 @@
                     "logdrain_axiom_dataset_name": {
                         "type": "string"
                     },
+                    "logdrain_axiom_domain": {
+                        "type": "string",
+                        "description": "Base domain of the Axiom edge deployment, for example us-east-1.aws.edge.axiom.co or eu-central-1.aws.edge.axiom.co."
+                    },
                     "logdrain_cloudwatch_region": {
                         "type": "string"
                     },
@@ -26419,6 +26469,35 @@
                                 "message": {
                                     "type": "string",
                                     "example": "Rate limit exceeded. Please try again later."
+                                }
+                            },
+                            "type": "object"
+                        }
+                    }
+                }
+            },
+            "502": {
+                "description": "The cloud provider API rejected the request.",
+                "content": {
+                    "application\/json": {
+                        "schema": {
+                            "properties": {
+                                "message": {
+                                    "type": "string",
+                                    "example": "Failed to create Hetzner server. The Hetzner API token does not have permission for this request. Use a token with read and write access."
+                                },
+                                "provider_status": {
+                                    "description": "The HTTP status from the cloud provider API.",
+                                    "type": "integer",
+                                    "example": 403
+                                },
+                                "provider_error_code": {
+                                    "description": "The error code from the cloud provider API, if it has one.",
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "example": "forbidden"
                                 }
                             },
                             "type": "object"

@@ -126,6 +126,7 @@ class ApplicationsController extends Controller
         ]);
         if (request()->attributes->get('can_read_sensitive', false) === true) {
             $application->makeVisible([
+                ...Application::COMMAND_AND_CONFIGURATION_ATTRIBUTES,
                 'custom_labels',
                 'dockerfile',
                 'docker_compose',
@@ -159,21 +160,6 @@ class ApplicationsController extends Controller
         }
 
         return $payload;
-    }
-
-    /**
-     * Setting or changing a manual webhook secret needs the deploy ability. Sending the stored value
-     * again or clearing it does not.
-     */
-    private function manualWebhookSecretForbiddenResponse(Request $request, ?Application $application = null): ?JsonResponse
-    {
-        foreach (['manual_webhook_secret_github', 'manual_webhook_secret_gitlab', 'manual_webhook_secret_bitbucket', 'manual_webhook_secret_gitea'] as $field) {
-            if ($request->filled($field) && $request->input($field) !== $application?->{$field}) {
-                return $this->deployAbilityForbiddenResponse($request, 'A manual webhook secret lets anyone who knows it start a deployment, so it needs a token with the deploy permission.');
-            }
-        }
-
-        return null;
     }
 
     private function applicationSettingsFromRequest(Request $request): array
@@ -1537,9 +1523,6 @@ class ApplicationsController extends Controller
         if ($internalNameValidation = $this->customInternalNameValidationResponse($applicationSettings)) {
             return $internalNameValidation;
         }
-        if ($forbidden = $this->manualWebhookSecretForbiddenResponse($request)) {
-            return $forbidden;
-        }
         if ($type === 'public') {
             $validationRules = [
                 'git_repository' => ['string', 'required', new ValidGitRepositoryUrl],
@@ -2640,7 +2623,7 @@ class ApplicationsController extends Controller
             new OA\Parameter(
                 name: 'service_name',
                 in: 'query',
-                description: 'Return logs only from the container of the Docker Compose service with this name. Returns 404 when no running container matches.',
+                description: 'Return logs only from the container of the Docker Compose service with this name. Returns 404 when no container matches. Stopped containers are included.',
                 required: false,
                 schema: new OA\Schema(type: 'string'),
             ),
@@ -2719,7 +2702,7 @@ class ApplicationsController extends Controller
             new OA\Parameter(
                 name: 'service_name',
                 in: 'query',
-                description: 'Return logs only from the container of the Docker Compose service with this name. Returns 404 when no running container matches.',
+                description: 'Return logs only from the container of the Docker Compose service with this name. Returns 404 when no container matches. Stopped containers are included.',
                 required: false,
                 schema: new OA\Schema(type: 'string'),
             ),
@@ -2786,20 +2769,13 @@ class ApplicationsController extends Controller
 
             if (! $matchingContainer) {
                 return response()->json([
-                    'message' => "No running container found for service_name '{$serviceName}'.",
+                    'message' => "No container found for service_name '{$serviceName}'.",
                 ], 404);
             }
 
             $container = $matchingContainer;
         } else {
-            $container = $containers->first();
-        }
-
-        $status = getContainerStatus($application->destination->server, $container['Names']);
-        if ($status !== 'running') {
-            return response()->json([
-                'message' => 'Application is not running.',
-            ], 400);
+            $container = $containers->firstWhere('State', 'running') ?? $containers->first();
         }
 
         $lines = normalizeLogLines($request->query('lines'));
@@ -3509,10 +3485,6 @@ class ApplicationsController extends Controller
                 'errors' => $errors,
             ], 422);
         }
-        if ($forbidden = $this->manualWebhookSecretForbiddenResponse($request, $application)) {
-            return $forbidden;
-        }
-
         $githubApp = null;
         if ($request->has('github_app_uuid')) {
             if ($application->build_pack === 'dockerimage' || filled($application->dockerfile) || $application->deploymentType() === 'deploy_key') {
