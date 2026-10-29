@@ -1293,9 +1293,9 @@ class Application extends BaseModel
         return false;
     }
 
-    public function get_last_successful_deployment()
+    public function get_last_successful_deployment(array $columns = ['*'])
     {
-        return ApplicationDeploymentQueue::where('application_id', $this->id)->where('status', ApplicationDeploymentStatus::FINISHED->value)->where('pull_request_id', 0)->orderBy('created_at', 'desc')->first();
+        return ApplicationDeploymentQueue::where('application_id', $this->id)->where('status', ApplicationDeploymentStatus::FINISHED->value)->where('pull_request_id', 0)->orderBy('created_at', 'desc')->first($columns);
     }
 
     public function get_last_days_deployments()
@@ -1314,6 +1314,7 @@ class Application extends BaseModel
         ?string $search = null,
         array $filters = [],
         string $sort = 'newest',
+        array $columns = ['*'],
     ): array {
         $deployments = ApplicationDeploymentQueue::query()
             ->where('application_id', $this->id);
@@ -1406,7 +1407,7 @@ class Application extends BaseModel
             ->orderBy('id', $sort === 'oldest' ? 'asc' : 'desc')
             ->skip($skip)
             ->take($take)
-            ->get();
+            ->get($columns);
 
         return [
             'count' => $count,
