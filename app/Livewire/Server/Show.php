@@ -250,14 +250,13 @@ class Show extends Component
                 $this->port = $this->server->port;
                 throw new \Exception('The IP address, SSH user, and SSH port of a transferred server cannot be changed.');
             }
-            // Check only a changed IP, so that an old duplicate does not block saving other fields.
-            $ipChanged = $this->ip !== Server::normalizeIp($this->server->getRawOriginal('ip'));
-            $foundServer = $ipChanged ? Server::where('ip', $this->ip)
-                ->where('id', '!=', $this->server->id)
-                ->first() : null;
-            if ($foundServer) {
+            // Check only a changed IP or port, so that an old duplicate does not block saving other fields.
+            $endpointChanged = $this->ip !== Server::normalizeIp($this->server->getRawOriginal('ip'))
+                || (int) $this->port !== (int) $this->server->port;
+            if ($endpointChanged && Server::sshEndpointInUse($this->ip, $this->port, $this->server->id)) {
                 $this->ip = $this->server->ip;
-                throw new \Exception('A server with this IP/Domain already exists.');
+                $this->port = $this->server->port;
+                throw new \Exception('A server with this IP/Domain and SSH port already exists.');
             }
 
             $this->server->name = $this->name;
@@ -850,8 +849,11 @@ class Show extends Component
     {
         try {
             $this->authorize('update', $this->server);
+            $providerRefreshed = $this->refreshProviderStatus();
             if (! $this->server->isFunctional()) {
-                $this->dispatch('error', 'Validate the server connection before fetching details.');
+                $providerRefreshed
+                    ? $this->dispatch('info', 'Provider status refreshed. Validate the server connection to fetch server details.')
+                    : $this->dispatch('error', 'Validate the server connection before fetching details.');
 
                 return;
             }
@@ -866,6 +868,30 @@ class Show extends Component
         } catch (\Throwable $e) {
             handleError($e, $this);
         }
+    }
+
+    /**
+     * Refresh the state of the linked cloud provider server, if there is one.
+     */
+    private function refreshProviderStatus(): bool
+    {
+        if (! $this->server->cloudProviderToken || $this->server->isTransferredAway()) {
+            return false;
+        }
+
+        $check = match (true) {
+            filled($this->server->hetzner_server_id) => $this->checkHetznerServerStatus(...),
+            filled($this->server->digitalocean_droplet_id) => $this->checkDigitalOceanDropletStatus(...),
+            filled($this->server->vultr_instance_id) => $this->checkVultrInstanceStatus(...),
+            filled($this->server->hostinger_virtual_machine_id) => $this->checkHostingerVirtualMachineStatus(...),
+            default => null,
+        };
+        if (! $check) {
+            return false;
+        }
+        $check();
+
+        return true;
     }
 
     public function submit()

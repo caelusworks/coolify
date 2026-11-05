@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Casts\EncryptedArrayCast;
 use App\Enums\ApplicationDeploymentStatus;
+use App\Services\Access\AccessResolver;
 use App\Services\Security\SensitiveDataRedactor;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -31,6 +32,7 @@ use OpenApi\Attributes as OA;
         'status' => ['type' => 'string'],
         'is_webhook' => ['type' => 'boolean'],
         'is_api' => ['type' => 'boolean'],
+        'is_mcp' => ['type' => 'boolean'],
         'created_at' => ['type' => 'string'],
         'updated_at' => ['type' => 'string'],
         'logs' => ['type' => 'string'],
@@ -50,6 +52,20 @@ use OpenApi\Attributes as OA;
 )]
 class ApplicationDeploymentQueue extends Model
 {
+    /**
+     * Only deployments of applications the authenticated member or API token can see.
+     */
+    public function scopeVisibleToCurrentActor(Builder $query): Builder
+    {
+        foreach (app(AccessResolver::class)->currentLayers() as $layer) {
+            if (! $layer->coversWholeTeam()) {
+                return $query->whereIn('application_id', Application::query()->pluck('id')->map(fn ($id) => (string) $id));
+            }
+        }
+
+        return $query;
+    }
+
     /**
      * Log redaction variants of remote secrets. Kept in memory only, never saved.
      *
@@ -74,7 +90,11 @@ class ApplicationDeploymentQueue extends Model
             }
 
             $application = $deployment->application;
-            $source = $deployment->is_api ? 'api' : 'ui';
+            $source = match (true) {
+                (bool) $deployment->is_mcp => 'mcp',
+                (bool) $deployment->is_api => 'api',
+                default => 'ui',
+            };
 
             auditLog("{$source}.application.rollback", [
                 'team_id' => $application?->team()?->id,
@@ -92,10 +112,10 @@ class ApplicationDeploymentQueue extends Model
                 return;
             }
 
+            // The API and MCP cancel paths do not fire model events and record their own audit event.
             $application = $deployment->application;
-            $source = $deployment->is_api ? 'api' : 'ui';
 
-            auditLog("{$source}.deployment.cancelled", [
+            auditLog('ui.deployment.cancelled', [
                 'team_id' => $application?->team()?->id,
                 'application_uuid' => $application?->uuid,
                 'application_name' => $application?->name,
@@ -130,10 +150,12 @@ class ApplicationDeploymentQueue extends Model
         'rollback',
         'commit_message',
         'is_api',
+        'is_mcp',
         'build_server_id',
         'horizon_job_id',
         'horizon_job_worker',
         'finished_at',
+        'deploy_started_at',
     ];
 
     /**
@@ -153,6 +175,7 @@ class ApplicationDeploymentQueue extends Model
     protected $casts = [
         'pull_request_id' => 'integer',
         'finished_at' => 'datetime',
+        'deploy_started_at' => 'datetime',
         'configuration_snapshot' => EncryptedArrayCast::class,
         'configuration_diff' => EncryptedArrayCast::class,
     ];

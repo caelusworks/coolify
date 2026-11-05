@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Access\AccessResolver;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use OpenApi\Attributes as OA;
@@ -100,6 +101,8 @@ class ApplicationSetting extends Model
         'include_coolify_default_variables' => 'boolean',
         'redact_all_env_values_in_logs' => 'boolean',
         'disable_build_cache' => 'boolean',
+        'is_auto_cancel_queued_deployments_enabled' => 'boolean',
+        'is_auto_cancel_building_deployments_enabled' => 'boolean',
     ];
 
     protected $fillable = [
@@ -145,6 +148,8 @@ class ApplicationSetting extends Model
         'docker_images_to_keep',
         'stop_grace_period',
         'rolling_update_drain_seconds',
+        'is_auto_cancel_queued_deployments_enabled',
+        'is_auto_cancel_building_deployments_enabled',
     ];
 
     /**
@@ -153,10 +158,11 @@ class ApplicationSetting extends Model
      */
     public static function isContainerNamePrefixInUse(string $prefix, Server $server, ?int $ignoreApplicationId = null): bool
     {
-        return $server->applications()->contains(function (Application $application) use ($prefix, $ignoreApplicationId) {
+        // Hidden applications of a scoped member still count, or two names on one server could collide.
+        return app(AccessResolver::class)->withoutVisibilityScope(fn () => $server->applications()->contains(function (Application $application) use ($prefix, $ignoreApplicationId) {
             return $application->id !== $ignoreApplicationId
                 && in_array($prefix, [$application->uuid, $application->settings->custom_container_name_prefix, $application->settings->custom_internal_name], true);
-        });
+        }));
     }
 
     public function stopGracePeriodSeconds(): int

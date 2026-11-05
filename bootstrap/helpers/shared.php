@@ -39,6 +39,7 @@ use App\Models\StandaloneSqlite;
 use App\Models\SwarmDocker;
 use App\Models\Team;
 use App\Models\User;
+use App\Services\Dns\CloudflareDnsProvider;
 use App\Services\Security\SensitiveDataRedactor;
 use App\Support\DnsRecordHints;
 use Carbon\CarbonImmutable;
@@ -715,14 +716,14 @@ function get_route_parameters(): array
 function get_latest_sentinel_version(): string
 {
     // Read the local versions.json, which CheckForUpdatesJob refreshes every hour. Do not ask the CDN for each server.
-    return data_get(get_versions_data(), 'coolify.sentinel.version') ?? '0.0.0';
+    return data_get(get_versions_data(), 'sentinel.version') ?? '0.0.0';
 }
 function get_latest_version_of_coolify(): string
 {
     try {
         $versions = get_versions_data();
 
-        return data_get($versions, 'coolify.v4.version', '0.0.0');
+        return data_get($versions, 'coolify.version', '0.0.0');
     } catch (Throwable $e) {
 
         return '0.0.0';
@@ -2519,12 +2520,12 @@ function validateDNSEntry(string $fqdn, Server $server)
             if ($results !== false) {
                 foreach ($results as $result) {
                     if ($result->getType() == $type) {
-                        if (isCloudflareIp($result->getData())) {
+                        if ($ip && DnsRecordHints::sameAddress($result->getData(), $ip)) {
                             $found_matching_ip = true;
                             break 2;
                         }
-                        if ($ip && DnsRecordHints::sameAddress($result->getData(), $ip)) {
-                            $found_matching_ip = true;
+                        if (isCloudflareIp($result->getData())) {
+                            $found_matching_ip = ! app(CloudflareDnsProvider::class)->sendsHostnameToAnotherServer($server, $host, $ip);
                             break 2;
                         }
                     }
@@ -4620,8 +4621,10 @@ function generate_fluentd_configuration(): array
             'fluentd-address' => 'tcp://127.0.0.1:24224',
             'fluentd-async' => 'true',
             'fluentd-sub-second-precision' => 'true',
-            // env vars are used in the LogDrain configurations
+            // The env vars exist only when the resource includes the Coolify default variables.
             'env' => 'COOLIFY_APP_NAME,COOLIFY_PROJECT_NAME,COOLIFY_SERVER_IP,COOLIFY_ENVIRONMENT_NAME',
+            // Every Coolify container has these labels. Docker skips a label that a container does not have.
+            'labels' => 'coolify.projectName,coolify.environmentName,coolify.resourceName,coolify.serviceName',
         ],
     ];
 }
@@ -5125,6 +5128,75 @@ function getJobStatus(?string $jobId = null)
     return $jobFound->first()->status;
 }
 
+/**
+ * Find the HEALTHCHECK instruction that applies to the image built from the Dockerfile.
+ *
+ * Docker builds the target stage, or the last stage when no target is set. A stage keeps the
+ * HEALTHCHECK of an earlier stage that it starts FROM, and the last HEALTHCHECK of a stage wins.
+ * Returns null when no HEALTHCHECK applies or when it is HEALTHCHECK NONE.
+ */
+function dockerfileHealthcheckInstruction(?string $dockerfile, ?string $target = null): ?string
+{
+    $instructions = [];
+    $current = '';
+    foreach (preg_split('/\R/', (string) $dockerfile) as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) {
+            continue;
+        }
+        $continues = str_ends_with($line, '\\');
+        $current = trim($current.' '.rtrim($line, '\\ '));
+        if (! $continues) {
+            $instructions[] = $current;
+            $current = '';
+        }
+    }
+    if ($current !== '') {
+        $instructions[] = $current;
+    }
+
+    /** @var array<int, array{name: ?string, parent: string, healthcheck: ?string}> $stages */
+    $stages = [];
+    foreach ($instructions as $instruction) {
+        if (preg_match('/^FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?/i', $instruction, $matches)) {
+            $stages[] = [
+                'name' => isset($matches[2]) ? strtolower($matches[2]) : null,
+                'parent' => strtolower($matches[1]),
+                'healthcheck' => null,
+            ];
+        } elseif ($stages !== [] && preg_match('/^HEALTHCHECK(\s|$)/i', $instruction)) {
+            $stages[array_key_last($stages)]['healthcheck'] = $instruction;
+        }
+    }
+    if ($stages === []) {
+        return null;
+    }
+
+    $target = filled($target) ? strtolower(trim($target)) : null;
+    $index = $target === null ? array_key_last($stages) : null;
+    foreach ($stages as $i => $stage) {
+        if ($target !== null && $stage['name'] === $target) {
+            $index = $i;
+        }
+    }
+
+    while ($index !== null) {
+        $stage = $stages[$index];
+        if ($stage['healthcheck'] !== null) {
+            return preg_match('/^HEALTHCHECK\s+NONE$/i', $stage['healthcheck']) ? null : $stage['healthcheck'];
+        }
+        $parentIndex = null;
+        foreach ($stages as $i => $candidate) {
+            if ($i < $index && $candidate['name'] === $stage['parent']) {
+                $parentIndex = $i;
+            }
+        }
+        $index = $parentIndex;
+    }
+
+    return null;
+}
+
 function parseDockerfileInterval(string $something)
 {
     $value = preg_replace('/[^0-9]/', '', $something);
@@ -5580,6 +5652,63 @@ function dockerComposeEnvironmentVariableInfo(?string $dockerCompose, string $ke
     ];
 }
 
+/**
+ * Docker Compose gives a bare $VAR or ${VAR} reference no default, and the service parser does not store
+ * defaults. So `/$POSTGRES_DB` next to `${POSTGRES_DB:-umami}` in another service resolves to an empty value.
+ * For new variables, store the default when the Compose file has a bare reference and exactly one default.
+ *
+ * @param  Collection<int, string>  $existingKeys
+ */
+function fillDockerComposeDefaultsForBareReferences(Service $resource, Collection $existingKeys): void
+{
+    $dockerCompose = $resource->docker_compose_raw;
+    if (blank($dockerCompose)) {
+        return;
+    }
+
+    $resource->environment_variables()
+        ->whereNull('value')
+        ->whereNotIn('key', $existingKeys)
+        ->get()
+        ->each(function (EnvironmentVariable $environmentVariable) use ($dockerCompose): void {
+            $default = dockerComposeBareReferenceDefault($dockerCompose, $environmentVariable->key);
+            // A nested default (`${A:-${B}}`) must stay with Compose: stored, it would be escaped to a literal.
+            if (filled($default) && ! str_contains($default, '$')) {
+                $environmentVariable->update(['value' => $default]);
+            }
+        });
+}
+
+/** The single default of a variable that the Compose file also references without a default, otherwise null. */
+function dockerComposeBareReferenceDefault(string $dockerCompose, string $key): ?string
+{
+    $quotedKey = preg_quote($key, '/');
+    if (preg_match('/(?<!\$)\$(?:'.$quotedKey.'(?![A-Za-z0-9_])|\{'.$quotedKey.'\})/', $dockerCompose) !== 1) {
+        return null;
+    }
+
+    $defaults = [];
+    $offset = 0;
+    while (($referenceStart = strpos($dockerCompose, '${'.$key, $offset)) !== false) {
+        $offset = $referenceStart + 2;
+        if ($referenceStart > 0 && $dockerCompose[$referenceStart - 1] === '$') {
+            continue;
+        }
+
+        $reference = extractBalancedBraceContent(substr($dockerCompose, $referenceStart));
+        $split = $reference === null ? null : splitOnOperatorOutsideNested($reference['content']);
+        if ($split === null || $split['variable'] !== $key) {
+            continue;
+        }
+        if (str_contains($split['operator'], '?')) {
+            return null;
+        }
+        $defaults[$split['default']] = true;
+    }
+
+    return count($defaults) === 1 ? (string) array_key_first($defaults) : null;
+}
+
 function dockerComposeEnvironmentVariableIsRequired(?string $dockerCompose, string $key): bool
 {
     if (blank($dockerCompose)) {
@@ -5603,6 +5732,54 @@ function dockerComposeEnvironmentVariableShouldBeUnset(?string $dockerCompose, s
     }
 
     return extractDockerComposeEnvironmentVariableReferences($dockerCompose)->contains($key);
+}
+
+/**
+ * Variables whose stored value the Compose parser before v4.5.0 wrote straight into the `environment:`
+ * list, so their containers got the value without the old .env escaping: references with a default or
+ * under another name (`FOO=${FOO:-}`, `BAR=${FOO}`, `BAR=$FOO`) and references in such a default.
+ * A plain `FOO=${FOO}` reference kept reading the escaped .env value.
+ *
+ * @return Collection<int, string>
+ */
+function dockerComposeVariablesWithStoredValueBeforeExactEscaping(?string $dockerCompose): Collection
+{
+    static $cache = [];
+    if (blank($dockerCompose)) {
+        return collect();
+    }
+
+    $cacheKey = hash('xxh128', $dockerCompose);
+    if (isset($cache[$cacheKey])) {
+        return $cache[$cacheKey];
+    }
+
+    $keys = collect();
+    foreach (extractHardcodedEnvironmentVariables($dockerCompose) as $assignment) {
+        $value = $assignment['value'] ?? null;
+        if (! is_string($value) || ! str_starts_with($value, '$') || replaceVariables($value)->value() === (string) $assignment['key']) {
+            continue;
+        }
+
+        $reference = extractBalancedBraceContent($value, 0);
+        if ($reference === null) {
+            if (preg_match('/\A\$([A-Za-z_][A-Za-z0-9_]*)\z/', $value, $match) === 1) {
+                $keys->push($match[1]);
+            }
+
+            continue;
+        }
+
+        $split = splitOnOperatorOutsideNested($reference['content']);
+        $keys->push($split === null ? $reference['content'] : $split['variable']);
+        if ($split !== null) {
+            $keys = $keys->concat(extractDockerComposeEnvironmentVariableReferences($split['default']));
+        }
+    }
+
+    $cache = [$cacheKey => $keys->reject(fn (string $key): bool => str_starts_with($key, 'SERVICE_'))->unique()->values()];
+
+    return $cache[$cacheKey];
 }
 
 /** @param Collection<int, EnvironmentVariable> $environmentVariables */

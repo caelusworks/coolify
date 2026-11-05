@@ -158,26 +158,29 @@
                                 @endforeach
                             @endif
                 </x-table.filter>
-                <x-table.sort>
-                            @foreach ([
-                                'newest' => 'Newest first',
-                                'oldest' => 'Oldest first',
-                            ] as $sortValue => $sortLabel)
-                                <button type="button" class="listbox-option" role="option"
-                                    aria-selected="{{ $deploymentSort === $sortValue ? 'true' : 'false' }}"
-                                    wire:click="setDeploymentSort('{{ $sortValue }}')"
-                                    @click="open = false">
-                                    <span>{{ $sortLabel }}</span>
-                                    @if ($deploymentSort === $sortValue)
-                                        <svg class="size-3.5 shrink-0" viewBox="0 0 24 24" fill="none">
-                                            <path d="m4.5 12.75 6 6 9-13.5" stroke="currentColor"
-                                                stroke-width="2.5" stroke-linecap="round"
-                                                stroke-linejoin="round" />
-                                        </svg>
-                                    @endif
-                                </button>
-                            @endforeach
-                </x-table.sort>
+                {{-- The Started header sorts the full table; the embedded history has no such header. --}}
+                @if ($embedded)
+                    <x-table.sort>
+                                @foreach ([
+                                    'newest' => 'Newest first',
+                                    'oldest' => 'Oldest first',
+                                ] as $sortValue => $sortLabel)
+                                    <button type="button" class="listbox-option" role="option"
+                                        aria-selected="{{ $deploymentSort === $sortValue ? 'true' : 'false' }}"
+                                        wire:click="setDeploymentSort('{{ $sortValue }}')"
+                                        @click="open = false">
+                                        <span>{{ $sortLabel }}</span>
+                                        @if ($deploymentSort === $sortValue)
+                                            <svg class="size-3.5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                                <path d="m4.5 12.75 6 6 9-13.5" stroke="currentColor"
+                                                    stroke-width="2.5" stroke-linecap="round"
+                                                    stroke-linejoin="round" />
+                                            </svg>
+                                        @endif
+                                    </button>
+                                @endforeach
+                    </x-table.sort>
+                @endif
             </x-table.toolbar>
 
             @if ($deployments->isNotEmpty())
@@ -234,6 +237,7 @@
                                 (bool) data_get($deployment, 'is_webhook') => 'Webhook',
                                 $pullRequestId > 0 => 'Pull request #' . $pullRequestId,
                                 (bool) data_get($deployment, 'rollback') => 'Rollback',
+                                (bool) data_get($deployment, 'is_mcp') => 'MCP',
                                 (bool) data_get($deployment, 'is_api') => 'API',
                                 default => 'Manual',
                             };
@@ -241,6 +245,7 @@
                                 $pullRequestId > 0 => 'pull-request',
                                 (bool) data_get($deployment, 'is_webhook') => 'webhook',
                                 (bool) data_get($deployment, 'rollback') => 'rollback',
+                                (bool) data_get($deployment, 'is_mcp') => 'mcp',
                                 (bool) data_get($deployment, 'is_api') => 'api',
                                 default => 'manual',
                             };
@@ -276,6 +281,7 @@
                             @unless ($embedded)
                                 <span class="min-w-0">
                                     <x-status-badge as="button" :status="$statusLabel" :type="$statusType"
+                                        :spinning="$deploymentStatus === 'in_progress'"
                                         class="table-filter-value table-filter-badge" title="Filter by {{ $statusLabel }}"
                                         wire:click="toggleDeploymentFilter('status:{{ $deploymentStatus }}')" />
                                 </span>
@@ -333,6 +339,10 @@
                                     <span>{{ \Carbon\Carbon::parse(data_get($deployment, 'created_at'))->diffForHumans(syntax: \Carbon\CarbonInterface::DIFF_ABSOLUTE, short: true) }}</span>
                                     <x-loading compact x-cloak x-show="selecting === '{{ data_get($deployment, 'deployment_uuid') }}'"
                                         aria-label="Loading deployment logs..." />
+                                    @if ($deploymentStatus === 'in_progress')
+                                        <x-loading compact x-show="selecting !== '{{ data_get($deployment, 'deployment_uuid') }}'"
+                                            aria-label="Deployment in progress" />
+                                    @else
                                     <span x-show="selecting !== '{{ data_get($deployment, 'deployment_uuid') }}'" @class([
                                         'size-2 shrink-0 rounded-full',
                                         'bg-emerald-500' => $statusType === 'success',
@@ -340,6 +350,7 @@
                                         'bg-red-500' => $statusType === 'error',
                                         'bg-neutral-400 dark:bg-neutral-500' => $statusType === 'neutral',
                                     ])></span>
+                                    @endif
                                 </a>
                             @endif
                             <a href="{{ $deploymentUrl }}" {!! $deploymentLinkAttributes !!} class="deployment-row-link absolute inset-0"

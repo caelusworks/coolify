@@ -7,6 +7,7 @@ use App\Helpers\SshMultiplexingHelper;
 use App\Models\Server;
 use App\Services\ServerTransfer\ServerTransferClaimer;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -49,8 +50,7 @@ class ServerConnectionCheckJob implements ShouldBeEncrypted, ShouldQueue
     private ?string $ownerMarker = null;
 
     public function __construct(
-        public Server $server,
-        public bool $disableMux = true
+        public Server $server
     ) {}
 
     public function middleware(): array
@@ -225,8 +225,7 @@ class ServerConnectionCheckJob implements ShouldBeEncrypted, ShouldQueue
     private function attemptConnection(): bool
     {
         try {
-            $process = Process::timeout(self::SSH_TIMEOUT_SECONDS)
-                ->run($this->sshCommand(self::probeCommand(), disableMultiplexing: true));
+            $process = $this->runSsh(self::probeCommand(), self::SSH_TIMEOUT_SECONDS, disableMultiplexing: true);
             if ($process->exitCode() !== 0) {
                 $this->connectionError = 'ssh exit '.$process->exitCode().': '.Str::limit(trim($process->errorOutput()), 300);
             } else {
@@ -304,11 +303,14 @@ class ServerConnectionCheckJob implements ShouldBeEncrypted, ShouldQueue
 
     /**
      * Run one Docker command with a single attempt. Returns null when it fails or times out.
+     * The command goes through the multiplexed connection: the probe already proved a fresh login,
+     * and each new SSH connection opens a systemd-logind session on the host. Some systemd versions
+     * leak closed sessions until the host refuses new logins at 8192 sessions.
      */
     private function runDockerCommand(string $command): ?string
     {
         try {
-            $process = Process::timeout(self::DOCKER_TIMEOUT_SECONDS)->run($this->sshCommand($command, disableMultiplexing: $this->disableMux));
+            $process = $this->runSsh($command, self::DOCKER_TIMEOUT_SECONDS);
         } catch (\Throwable $e) {
             Log::debug('ServerConnectionCheck: Docker command failed', [
                 'server_id' => $this->server->id,
@@ -322,13 +324,15 @@ class ServerConnectionCheckJob implements ShouldBeEncrypted, ShouldQueue
         return $process->successful() ? sanitize_utf8_text(trim($process->output())) : null;
     }
 
-    private function sshCommand(string $command, bool $disableMultiplexing = false): string
+    private function runSsh(string $command, int $timeout, bool $disableMultiplexing = false): ProcessResult
     {
         $commands = [$command];
         if ($this->server->isNonRoot()) {
             $commands = parseCommandsByLineForSudo(collect($commands), $this->server);
         }
 
-        return SshMultiplexingHelper::generateSshCommand($this->server, implode("\n", $commands), $disableMultiplexing);
+        return Process::timeout($timeout)
+            ->input(SshMultiplexingHelper::sshBatchInput(implode("\n", $commands)))
+            ->run(SshMultiplexingHelper::generateSshBatchCommand($this->server, $disableMultiplexing));
     }
 }

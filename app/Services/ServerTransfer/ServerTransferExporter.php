@@ -899,6 +899,7 @@ class ServerTransferExporter
         // Ensure hidden encrypted fields are included as plaintext.
         foreach ([
             'http_basic_auth_password',
+            'git_https_password',
             'manual_webhook_secret_github',
             'manual_webhook_secret_gitlab',
             'manual_webhook_secret_bitbucket',
@@ -1323,7 +1324,9 @@ class ServerTransferExporter
                 'frequency' => $task->frequency,
                 'container' => $task->container,
                 'timeout' => $task->timeout,
+                'use_shell' => (bool) ($task->use_shell ?? true),
                 'enabled' => (bool) ($task->enabled ?? true),
+                'disabled_reason' => $task->disabled_reason,
             ];
         }
 
@@ -1489,6 +1492,7 @@ class ServerTransferExporter
             'bucket' => $storage->bucket,
             'endpoint' => $storage->endpoint,
             'use_path_style_endpoint' => $storage->usesPathStyleEndpoint(),
+            'skip_tls_verification' => (bool) $storage->skip_tls_verification,
             'is_usable' => (bool) $storage->is_usable,
         ];
     }
