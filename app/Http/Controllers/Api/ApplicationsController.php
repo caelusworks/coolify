@@ -57,6 +57,7 @@ class ApplicationsController extends Controller
         'disable_build_cache',
         'inject_build_args_to_dockerfile',
         'include_source_commit_in_build',
+        'include_network_hosts_in_build',
         'is_env_sorting_enabled',
         'redact_all_env_values_in_logs',
         'include_coolify_default_variables',
@@ -90,6 +91,7 @@ class ApplicationsController extends Controller
         'disable_build_cache',
         'inject_build_args_to_dockerfile',
         'include_source_commit_in_build',
+        'include_network_hosts_in_build',
         'is_env_sorting_enabled',
         'redact_all_env_values_in_logs',
         'include_coolify_default_variables',
@@ -475,6 +477,7 @@ class ApplicationsController extends Controller
                             'disable_build_cache' => ['type' => 'boolean', 'description' => 'Disable the build cache.'],
                             'inject_build_args_to_dockerfile' => ['type' => 'boolean', 'description' => 'Inject build arguments into the Dockerfile build.'],
                             'include_source_commit_in_build' => ['type' => 'boolean', 'description' => 'Include the source commit in the build.'],
+                            'include_network_hosts_in_build' => ['type' => 'boolean', 'description' => 'Add the containers of the destination network as build hosts.'],
                             'is_env_sorting_enabled' => ['type' => 'boolean', 'description' => 'Sort environment variables.'],
                             'redact_all_env_values_in_logs' => ['type' => 'boolean', 'description' => 'Redact all environment variable values in logs. When false, only locked (shown once) values are redacted. Requires team admin permissions.'],
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
@@ -687,6 +690,7 @@ class ApplicationsController extends Controller
                             'disable_build_cache' => ['type' => 'boolean', 'description' => 'Disable the build cache.'],
                             'inject_build_args_to_dockerfile' => ['type' => 'boolean', 'description' => 'Inject build arguments into the Dockerfile build.'],
                             'include_source_commit_in_build' => ['type' => 'boolean', 'description' => 'Include the source commit in the build.'],
+                            'include_network_hosts_in_build' => ['type' => 'boolean', 'description' => 'Add the containers of the destination network as build hosts.'],
                             'is_env_sorting_enabled' => ['type' => 'boolean', 'description' => 'Sort environment variables.'],
                             'redact_all_env_values_in_logs' => ['type' => 'boolean', 'description' => 'Redact all environment variable values in logs. When false, only locked (shown once) values are redacted. Requires team admin permissions.'],
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
@@ -899,6 +903,7 @@ class ApplicationsController extends Controller
                             'disable_build_cache' => ['type' => 'boolean', 'description' => 'Disable the build cache.'],
                             'inject_build_args_to_dockerfile' => ['type' => 'boolean', 'description' => 'Inject build arguments into the Dockerfile build.'],
                             'include_source_commit_in_build' => ['type' => 'boolean', 'description' => 'Include the source commit in the build.'],
+                            'include_network_hosts_in_build' => ['type' => 'boolean', 'description' => 'Add the containers of the destination network as build hosts.'],
                             'is_env_sorting_enabled' => ['type' => 'boolean', 'description' => 'Sort environment variables.'],
                             'redact_all_env_values_in_logs' => ['type' => 'boolean', 'description' => 'Redact all environment variable values in logs. When false, only locked (shown once) values are redacted. Requires team admin permissions.'],
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
@@ -1111,6 +1116,7 @@ class ApplicationsController extends Controller
                             'disable_build_cache' => ['type' => 'boolean', 'description' => 'Disable the build cache.'],
                             'inject_build_args_to_dockerfile' => ['type' => 'boolean', 'description' => 'Inject build arguments into the Dockerfile build.'],
                             'include_source_commit_in_build' => ['type' => 'boolean', 'description' => 'Include the source commit in the build.'],
+                            'include_network_hosts_in_build' => ['type' => 'boolean', 'description' => 'Add the containers of the destination network as build hosts.'],
                             'is_env_sorting_enabled' => ['type' => 'boolean', 'description' => 'Sort environment variables.'],
                             'redact_all_env_values_in_logs' => ['type' => 'boolean', 'description' => 'Redact all environment variable values in logs. When false, only locked (shown once) values are redacted. Requires team admin permissions.'],
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
@@ -1293,6 +1299,7 @@ class ApplicationsController extends Controller
                             'disable_build_cache' => ['type' => 'boolean', 'description' => 'Disable the build cache.'],
                             'inject_build_args_to_dockerfile' => ['type' => 'boolean', 'description' => 'Inject build arguments into the Dockerfile build.'],
                             'include_source_commit_in_build' => ['type' => 'boolean', 'description' => 'Include the source commit in the build.'],
+                            'include_network_hosts_in_build' => ['type' => 'boolean', 'description' => 'Add the containers of the destination network as build hosts.'],
                             'is_env_sorting_enabled' => ['type' => 'boolean', 'description' => 'Sort environment variables.'],
                             'redact_all_env_values_in_logs' => ['type' => 'boolean', 'description' => 'Redact all environment variable values in logs. When false, only locked (shown once) values are redacted. Requires team admin permissions.'],
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
@@ -1471,6 +1478,7 @@ class ApplicationsController extends Controller
                             'disable_build_cache' => ['type' => 'boolean', 'description' => 'Disable the build cache.'],
                             'inject_build_args_to_dockerfile' => ['type' => 'boolean', 'description' => 'Inject build arguments into the Dockerfile build.'],
                             'include_source_commit_in_build' => ['type' => 'boolean', 'description' => 'Include the source commit in the build.'],
+                            'include_network_hosts_in_build' => ['type' => 'boolean', 'description' => 'Add the containers of the destination network as build hosts.'],
                             'is_env_sorting_enabled' => ['type' => 'boolean', 'description' => 'Sort environment variables.'],
                             'redact_all_env_values_in_logs' => ['type' => 'boolean', 'description' => 'Redact all environment variable values in logs. When false, only locked (shown once) values are redacted. Requires team admin permissions.'],
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
@@ -3507,6 +3515,7 @@ class ApplicationsController extends Controller
                             'disable_build_cache' => ['type' => 'boolean', 'description' => 'Disable the build cache.'],
                             'inject_build_args_to_dockerfile' => ['type' => 'boolean', 'description' => 'Inject build arguments into the Dockerfile build.'],
                             'include_source_commit_in_build' => ['type' => 'boolean', 'description' => 'Include the source commit in the build.'],
+                            'include_network_hosts_in_build' => ['type' => 'boolean', 'description' => 'Add the containers of the destination network as build hosts.'],
                             'is_env_sorting_enabled' => ['type' => 'boolean', 'description' => 'Sort environment variables.'],
                             'redact_all_env_values_in_logs' => ['type' => 'boolean', 'description' => 'Redact all environment variable values in logs. When false, only locked (shown once) values are redacted. Requires team admin permissions.'],
                             'include_coolify_default_variables' => ['type' => 'boolean', 'default' => true, 'description' => 'Add the predefined COOLIFY_* variables (COOLIFY_URL, COOLIFY_FQDN, ...) to the environment. Requires team admin permissions. Redeploy to apply it.'],
@@ -3622,6 +3631,7 @@ class ApplicationsController extends Controller
         }
 
         $this->authorize('update', $application);
+        $settingsBefore = $application->settings->getAttributes();
 
         if ($request->has('redact_all_env_values_in_logs') || $request->has('include_coolify_default_variables')) {
             $this->authorize('manageEnvironment', $application);
@@ -4083,12 +4093,18 @@ class ApplicationsController extends Controller
         $dnsCleanup->queueReleaseOfRemovedHostnames($application, $previousDnsHostnames, (int) $teamId);
         app(ResourceDnsRecords::class)->queueAutomaticRecords($application, $previousDnsHostnames);
 
-        auditLog('api.application.updated', [
-            'team_id' => $teamId,
-            'application_uuid' => $application->uuid,
-            'application_name' => $application->name,
-            'changed_fields' => array_values(array_intersect($allowedFields, array_keys($request->all()))),
-        ]);
+        $changedSettings = collect($application->settings->getAttributes())
+            ->reject(fn (mixed $value, string $field): bool => $field === 'updated_at' || ($settingsBefore[$field] ?? null) == $value)
+            ->keys();
+        $changedFields = [...auditSavedFields($application), ...$changedSettings];
+        if ($changedFields !== []) {
+            auditLog('api.application.updated', [
+                'team_id' => $teamId,
+                'application_uuid' => $application->uuid,
+                'application_name' => $application->name,
+                'changed_fields' => $changedFields,
+            ]);
+        }
 
         if ($instantDeploy) {
             $deployment_uuid = new_public_id();
@@ -4330,15 +4346,20 @@ class ApplicationsController extends Controller
             $env->value = $request->value;
         }
         $env->fill($request->only(['is_literal', 'is_multiline', 'is_shown_once', 'is_runtime', 'is_buildtime', 'comment']));
-        $env->save();
+        // One audit row with the application context, instead of a second row from the model.
+        $env->withoutAuditLogging(fn () => $env->save());
+        $changedFields = auditSavedFields($env);
 
-        auditLog('api.application.env_updated', [
-            'team_id' => $teamId,
-            'application_uuid' => $application->uuid,
-            'env_uuid' => $env->uuid,
-            'env_key' => $env->key,
-            'is_preview' => (bool) $is_preview,
-        ]);
+        if ($changedFields !== []) {
+            auditLog('api.application.env_updated', [
+                'team_id' => $teamId,
+                'application_uuid' => $application->uuid,
+                'env_uuid' => $env->uuid,
+                'env_key' => $env->key,
+                'is_preview' => (bool) $is_preview,
+                'changed_fields' => $changedFields,
+            ]);
+        }
 
         return response()->json($this->removeSensitiveData($env))->setStatusCode(201);
     }

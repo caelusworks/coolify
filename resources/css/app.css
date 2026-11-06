@@ -482,6 +482,18 @@ select,
 /*
 * Base styles
 */
+/* UI scale from the Appearance page. It scales rem sizes only, because CSS zoom breaks the
+   mouse positions in xterm and the canvas. Phones keep 100% so inputs stay at 16px. */
+@media (min-width: 768px) {
+    html[data-ui-scale="90"] {
+        font-size: 90%;
+    }
+
+    html[data-ui-scale="80"] {
+        font-size: 80%;
+    }
+}
+
 html,
 body {
     @apply w-full min-h-full bg-neutral-50 dark:bg-app dark:text-fg-dim;
@@ -2783,6 +2795,11 @@ html[data-theme="custom"]:not(.dark) :is(.application-settings-section, .applica
     box-shadow: var(--shadow-dropdown);
 }
 
+/* Geist centers lowercase letters 1px below the line box center. Move the icons to match. */
+.top-user-menu-panel .listbox-option svg {
+    translate: 0 1px;
+}
+
 @media (max-width: 767px) {
     /* The mobile top bar's backdrop filter makes it the containing block for
        fixed descendants. Keep this menu anchored below its trigger instead
@@ -3179,11 +3196,6 @@ input[type="search"]::-webkit-search-results-decoration {
 
 .table-filter-value.table-filter-badge:hover {
     text-decoration-color: transparent;
-    border-color: var(--color-neutral-400);
-}
-
-.dark .table-filter-value.table-filter-badge:hover {
-    border-color: rgba(255, 255, 255, 0.3);
 }
 
 .env-table-grid {
@@ -3540,8 +3552,9 @@ input[type="search"]::-webkit-search-results-decoration {
     min-width: 50rem;
 }
 
+/* Shared by the Schedules and Executions tables of a service, so their columns line up. */
 .service-backup-table-grid {
-    grid-template-columns: minmax(10rem, 1.7fr) 6rem minmax(7rem, 0.8fr) 7.5rem 6.5rem minmax(8rem, 1fr) 4.5rem;
+    grid-template-columns: minmax(10rem, 1.5fr) 6rem minmax(7rem, 0.8fr) 7.5rem minmax(11rem, 1.2fr) minmax(6rem, 0.8fr) 4.5rem;
     width: 100%;
 }
 
@@ -3551,16 +3564,7 @@ input[type="search"]::-webkit-search-results-decoration {
 
 /* Rows are reordered with CSS order, so dividers must not depend on DOM position. */
 .data-table-row.service-backup-table-grid {
-    background: var(--coollabs-base);
     border-top: 1px solid var(--coollabs-fill);
-}
-
-.data-table-row.service-backup-table-grid:hover {
-    background: color-mix(in srgb, var(--coollabs-base) 98%, black);
-}
-
-.dark .data-table-row.service-backup-table-grid:hover {
-    background: color-mix(in srgb, var(--coollabs-base) 98%, white);
 }
 
 /* Persistent storage volumes: Name | [Source] | Destination | [PR suffix] | Backup | [Actions] */
@@ -4267,7 +4271,6 @@ html[data-theme="custom"] .logs-viewer-timestamp {
 
 .logs-section-status-badge {
     height: 1.5rem !important;
-    padding-inline: 0.5rem !important;
     font-size: 0.6875rem !important;
 }
 
