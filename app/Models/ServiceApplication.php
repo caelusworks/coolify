@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Support\DomainPortOverrides;
 use App\Support\DomainUrlParts;
+use App\Traits\HasImageScans;
 use App\Traits\HasNoindexDomains;
 use App\Traits\HasRestartLimit;
 use App\Traits\ReleasesManagedDnsRecords;
@@ -14,7 +15,7 @@ use Symfony\Component\Yaml\Exception\ParseException;
 
 class ServiceApplication extends BaseModel
 {
-    use HasFactory, HasNoindexDomains, HasRestartLimit, ReleasesManagedDnsRecords, SoftDeletes;
+    use HasFactory, HasImageScans, HasNoindexDomains, HasRestartLimit, ReleasesManagedDnsRecords, SoftDeletes;
 
     protected $appends = ['url'];
 
@@ -274,7 +275,7 @@ class ServiceApplication extends BaseModel
     /**
      * True when saving this URL should confirm that it does not use the required template port.
      */
-    public function portRequiresConfirmation(string $fqdn, ?int $requiredPort, ?string $previousFqdn = null): bool
+    public function portRequiresConfirmation(string $fqdn, ?int $requiredPort): bool
     {
         if ($requiredPort === null) {
             return false;
@@ -285,28 +286,14 @@ class ServiceApplication extends BaseModel
             return false;
         }
 
-        $canonical = DomainPortOverrides::withoutPort($fqdn);
         $explicit = self::extractPortFromUrl($fqdn);
 
-        if ($explicit === $requiredPort) {
+        // A domain without a port routes to the required port.
+        if ($explicit === null || $explicit === $requiredPort) {
             return false;
         }
 
-        if ($explicit === null) {
-            $previous = collect(explode(',', (string) $previousFqdn))
-                ->filter();
-            $previousUrl = $previous->first(
-                fn (string $url): bool => DomainPortOverrides::withoutPort(trim($url)) === $canonical
-            );
-
-            if (is_string($previousUrl) && self::extractPortFromUrl($previousUrl) !== null) {
-                return true;
-            }
-
-            return $previousUrl === null;
-        }
-
-        $existingOverride = $this->domain_port_overrides[$canonical] ?? null;
+        $existingOverride = $this->domain_port_overrides[DomainPortOverrides::withoutPort($fqdn)] ?? null;
 
         return (int) $existingOverride !== $explicit;
     }
