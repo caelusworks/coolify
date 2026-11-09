@@ -61,7 +61,8 @@ class Vulnerabilities extends Component
 
     private const EXPIRES = ['30', '90', 'never'];
 
-    private const CHECKPOINTS = ['Get scanner', 'Update database', 'Read image', 'Find vulnerabilities'];
+    /** "Start scan" covers the wait in the queue and for the scan lock of the server; it does not get the scanner. */
+    private const CHECKPOINTS = ['Start scan', 'Update database', 'Read image', 'Find vulnerabilities'];
 
     /** Progress stage of ScanImage => index in CHECKPOINTS. */
     private const STAGE_CHECKPOINT = [ScanResourceImagesJob::QUEUED_STAGE => 0, 'database' => 1, 'pull' => 2, 'inspect' => 2, 'sbom' => 2, 'vulnerabilities' => 3];
@@ -721,23 +722,25 @@ class Vulnerabilities extends Component
     }
 
     /**
-     * The last scan errors of the owners, as their fixed messages.
+     * The last scan errors of the owners, as their fixed messages, with the error log for users who can update the resource.
      *
      * @param  Collection<int, Model>  $owners
-     * @return list<string>
+     * @return list<array{message: string, detail: ?string}>
      */
-    private function errorMessages(Collection $owners): array
+    private function errorMessages(Collection $owners, bool $showDetail): array
     {
         $messages = [];
         foreach ($owners as $owner) {
             $error = Cache::get(ScanImage::lastErrorCacheKey($owner));
             $code = is_array($error) ? ImageScanErrorCode::tryFrom((string) ($error['code'] ?? '')) : null;
             if ($code !== null) {
-                $messages[] = $code->message((array) ($error['context'] ?? []));
+                $context = (array) ($error['context'] ?? []);
+                $detail = $showDetail && is_string($context['detail'] ?? null) ? $context['detail'] : null;
+                $messages[$code->message($context)."\n".$detail] = ['message' => $code->message($context), 'detail' => $detail];
             }
         }
 
-        return array_values(array_unique($messages));
+        return array_values($messages);
     }
 
     /**
@@ -959,7 +962,7 @@ class Vulnerabilities extends Component
             'offState' => $offState,
             'serverName' => (string) ($server?->name ?? 'this server'),
             'serverUrl' => $server instanceof Server && $user->can('update', $server)
-                ? route('server.security.image-scanning', ['server_uuid' => $server->uuid])
+                ? route('server.security.vulnerabilities', ['server_uuid' => $server->uuid])
                 : null,
             'canUpdate' => $canUpdate,
         ];
@@ -1002,7 +1005,7 @@ class Vulnerabilities extends Component
             'scans' => $scans,
             'progress' => $progress,
             'checkpoints' => $this->checkpoints($progress),
-            'errorMessages' => $this->errorMessages($owners),
+            'errorMessages' => $this->errorMessages($owners, $canUpdate),
             'card' => $security === null ? null : SecurityCard::for($resource, $security, $owners, $scans, $user, $imageStatuses, fn (Model $owner): RelevanceRules => $this->rulesFor($owner)),
             'isApplication' => $resource instanceof Application,
             'checkedAt' => $checkedAt === null ? null : Carbon::instance($checkedAt),

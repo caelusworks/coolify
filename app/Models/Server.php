@@ -37,6 +37,7 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
@@ -725,6 +726,11 @@ class Server extends BaseModel
         return $this->hasMany(ImageSbom::class);
     }
 
+    public function hostScan(): HasOne
+    {
+        return $this->hasOne(ServerHostScan::class);
+    }
+
     public function dockerCleanupExecutions()
     {
         return $this->hasMany(DockerCleanupExecution::class);
@@ -1013,9 +1019,9 @@ class Server extends BaseModel
     }
 
     /**
-     * Traefik routers that use the same rule as the resource routers, with a priority one
-     * higher. Traefik uses the rule length as the default priority, so a resource on a longer
-     * path of the same host keeps its own router.
+     * Traefik routers that use the same rule as the resource routers (from the domains, or
+     * from custom labels), with a priority one higher. Traefik uses the rule length as the
+     * default priority, so a resource on a longer path of the same host keeps its own router.
      *
      * @param  Collection<int, Application|Service>  $resources
      */
@@ -1024,7 +1030,7 @@ class Server extends BaseModel
         $routers = [];
         $middlewares = [];
         foreach ($resources as $resource) {
-            $routes = $resource->maintenanceRoutes();
+            $routes = $resource->maintenanceTraefikRouters();
             if ($routes->isEmpty()) {
                 continue;
             }
@@ -1036,22 +1042,15 @@ class Server extends BaseModel
                     'query' => '/'.$resource->maintenancePageFile(),
                 ],
             ];
-            foreach ($routes as $index => $route) {
-                $rule = "Host(`{$route['host']}`) && PathPrefix(`{$route['path']}`)";
-                $router = [
-                    'entryPoints' => ['http'],
-                    'rule' => $rule,
+            foreach ($routes as $route) {
+                $routers["coolify-maintenance-{$resource->uuid}-{$route['name']}"] = array_filter([
+                    'entryPoints' => $route['entryPoints'],
+                    'rule' => $route['rule'],
                     'service' => 'coolify-maintenance-noop',
                     'middlewares' => ['coolify-maintenance-headers', $middleware],
-                    'priority' => strlen($rule) + 1,
-                ];
-                $routers["coolify-maintenance-{$resource->uuid}-{$index}-http"] = $router;
-                if ($route['scheme'] === 'https') {
-                    $routers["coolify-maintenance-{$resource->uuid}-{$index}-https"] = array_merge($router, [
-                        'entryPoints' => ['https'],
-                        'tls' => ['certResolver' => 'letsencrypt'],
-                    ]);
-                }
+                    'priority' => $route['priority'],
+                    'tls' => $route['tls'],
+                ], fn ($value) => $value !== null);
             }
         }
 
@@ -1090,11 +1089,10 @@ class Server extends BaseModel
         $resources ??= $this->maintenanceResources();
         $sites = [];
         foreach ($resources as $resource) {
-            foreach ($resource->maintenanceRoutes() as $index => $route) {
-                $address = caddySiteAddress($route['scheme'], $route['host'], $route['force_https']);
+            foreach ($resource->maintenanceCaddySites() as $index => $site) {
                 $matcher = "@coolify-maintenance-{$resource->uuid}-{$index}";
-                $sites[$address][] = implode("\n", [
-                    "\t{$matcher} path {$route['path']}*",
+                $sites[$site['address']][] = implode("\n", [
+                    "\t{$matcher} path {$site['path']}",
                     "\thandle {$matcher} {",
                     "\t\treverse_proxy ".self::PROXY_ERROR_PAGE_CONTAINER.':80 {',
                     "\t\t\trewrite /{$resource->maintenancePageFile()}",

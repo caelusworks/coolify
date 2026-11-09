@@ -101,27 +101,38 @@ describe('server image scanning page', function () {
     it('shows the off state with the turn on button', function () {
         imageScanningPage()
             ->assertSee('Image scanning is off for '.$this->server->name.'.')
-            ->assertSee('Turn on image scanning');
+            ->assertSee('Enable image scanning?');
     });
 
-    it('shows the progress of the scanner preparation', function () {
+    it('shows only the title row and the database build time in the helper when the scanner is ready', function () {
         $this->server->settings->forceFill(['is_image_scan_enabled' => true])->saveQuietly();
         Cache::put(PrepareImageScannerJob::stateCacheKey($this->server), 'ready');
         Cache::put(PrepareImageScannerJob::builtAtCacheKey($this->server), now()->subDay()->toIso8601ZuluString());
 
         imageScanningPage()
-            ->assertSee('Get scanner')
-            ->assertSee('Update database')
-            ->assertSee('Database built')
-            ->assertSee('Turn off image scanning')
+            ->assertSee('Database built 1 day ago')
+            ->assertSee('Coolify downloads the latest vulnerability database every day')
+            ->assertDontSee('Update database')
+            ->assertDontSee('Get scanner')
+            ->assertSee('Disable image scanning?')
             ->assertSee('Delete scanner data');
+    });
+
+    it('shows the progress of the scanner preparation', function () {
+        $this->server->settings->forceFill(['is_image_scan_enabled' => true])->saveQuietly();
+        Cache::put(PrepareImageScannerJob::stateCacheKey($this->server), 'updating_database');
+
+        imageScanningPage()
+            ->assertSee('Get scanner')
+            ->assertSee('Downloading the vulnerability database.')
+            ->assertDontSee('Database built');
     });
 
     it('refuses to turn on a server that another instance manages', function () {
         Queue::fake();
         $this->server->forceFill(['server_metadata' => ['transfer' => ['status' => 'transferred']]])->saveQuietly();
 
-        imageScanningPage()->call('enable')->assertDispatched('error', 'This server is managed by another Coolify instance.');
+        imageScanningPage()->call('enable')->assertDispatched('error', message: 'This server is managed by another Coolify instance.');
 
         expect($this->server->settings->fresh()->is_image_scan_enabled)->toBeFalse();
         Queue::assertNothingPushed();
@@ -136,6 +147,24 @@ describe('server image scanning page', function () {
 
         Process::assertRan(fn (PendingProcess $process) => str_contains(remoteProcessScript($process), 'docker volume rm -f coolify-grype-db'));
         expect(Cache::has(PrepareImageScannerJob::stateCacheKey($this->server)))->toBeFalse();
+    });
+
+    it('does not delete the scanner data while a scan holds the server lock', function () {
+        Process::fake(fn () => Process::result(output: ''));
+        $this->server->settings->forceFill(['is_image_scan_enabled' => true])->saveQuietly();
+        Cache::put(PrepareImageScannerJob::stateCacheKey($this->server), 'ready');
+        $lock = ScanImage::serverLock($this->server);
+        $lock->get();
+
+        imageScanningPage()
+            ->call('deleteScannerData')
+            ->assertDispatched('error')
+            ->assertNotDispatched('success');
+        $lock->release();
+
+        Process::assertDidntRun(fn (PendingProcess $process) => str_contains(remoteProcessScript($process), 'docker volume rm -f coolify-grype-db'));
+        expect(Cache::get(PrepareImageScannerJob::stateCacheKey($this->server)))->toBe('ready')
+            ->and(ScanImage::serverLock($this->server)->get())->toBeTrue();
     });
 
     it('reports a failed deletion and keeps the progress when the server cannot be reached', function () {
@@ -163,10 +192,54 @@ describe('server image scanning page', function () {
             ->assertSee('Disk used by scanner data: 1.1 GB');
     });
 
+    it('hides the delete action only when the server is known to have no scanner data', function () {
+        Process::fake(fn () => Process::result(output: ''));
+        $this->server->settings->forceFill(['is_image_scan_enabled' => true])->saveQuietly();
+
+        // No cached state or disk use: the data can still be on the server.
+        imageScanningPage()->assertSee('Delete scanner data');
+
+        Cache::put(PrepareImageScannerJob::diskUsedCacheKey($this->server), 0);
+        imageScanningPage()->assertDontSee('Delete scanner data');
+
+        Cache::put(PrepareImageScannerJob::stateCacheKey($this->server), 'ready');
+        imageScanningPage()->assertSee('Delete scanner data');
+
+        imageScanningPage()->call('deleteScannerData')->assertDontSee('Delete scanner data');
+    });
+
     it('shows no disk usage before the job has stored it', function () {
         $this->server->settings->forceFill(['is_image_scan_enabled' => true])->saveQuietly();
 
         imageScanningPage()->assertDontSee('Disk used by scanner data');
+    });
+});
+
+describe('scanner memory limit', function () {
+    it('saves the scanner memory limit of the server and shows it in the cost text', function () {
+        imageScanningPage()
+            ->assertSet('scannerMemoryMb', '1024')
+            ->assertSee('1 CPU and 1 GB of memory')
+            ->set('scannerMemoryMb', '4096')
+            ->assertHasNoErrors()
+            ->assertDispatched('success')
+            ->assertSee('1 CPU and 4 GB of memory');
+
+        expect($this->server->settings->fresh()->image_scan_memory_mb)->toBe(4096);
+    });
+
+    it('refuses a memory limit that is not one of the options', function () {
+        imageScanningPage()->set('scannerMemoryMb', '100')->assertHasErrors('scannerMemoryMb');
+
+        expect($this->server->settings->fresh()->image_scan_memory_mb)->toBe(1024);
+    });
+
+    it('does not change the memory limit of a server that another instance manages', function () {
+        $this->server->forceFill(['server_metadata' => ['transfer' => ['status' => 'transferred']]])->saveQuietly();
+
+        imageScanningPage()->set('scannerMemoryMb', '2048')->assertNotDispatched('success');
+
+        expect($this->server->settings->fresh()->image_scan_memory_mb)->toBe(1024);
     });
 });
 
@@ -193,6 +266,7 @@ describe('server image scanning authorization', function () {
 
         $components = collect(['enable', 'disable', 'deleteScannerData'])
             ->mapWithKeys(fn (string $action) => [$action => Livewire::test(ServerImageScanning::class, ['server_uuid' => $this->server->uuid])]);
+        $memoryComponent = Livewire::test(ServerImageScanning::class, ['server_uuid' => $this->server->uuid]);
 
         $this->member->teams()->updateExistingPivot($this->team->id, ['role' => 'member']);
         $this->member->unsetRelation('teams');
@@ -201,8 +275,10 @@ describe('server image scanning authorization', function () {
         foreach ($components as $action => $component) {
             $component->call($action)->assertForbidden();
         }
+        $memoryComponent->set('scannerMemoryMb', '8192')->assertForbidden();
 
-        expect($this->server->settings->fresh()->is_image_scan_enabled)->toBeFalse();
+        expect($this->server->settings->fresh()->is_image_scan_enabled)->toBeFalse()
+            ->and($this->server->settings->fresh()->image_scan_memory_mb)->toBe(1024);
         Queue::assertNothingPushed();
     });
 
@@ -229,7 +305,8 @@ describe('prepare image scanner job', function () {
         (new PrepareImageScannerJob($this->server))->handle();
 
         expect(Cache::get(PrepareImageScannerJob::stateCacheKey($this->server)))->toBe('ready')
-            ->and(Cache::get(PrepareImageScannerJob::builtAtCacheKey($this->server)))->toBe('2026-10-25T08:15:00Z');
+            ->and(Cache::get(PrepareImageScannerJob::builtAtCacheKey($this->server)))->toBe('2026-10-25T08:15:00Z')
+            ->and(ScanImage::serverLock($this->server)->get())->toBeTrue();
         Event::assertDispatched(ImageScanUpdated::class, 3);
         Event::assertDispatched(ImageScanUpdated::class, fn ($event) => $event->resourceUuid === $this->server->uuid && $event->scanUuid === 'prepare' && $event->teamId === $this->team->id);
     });
@@ -242,7 +319,7 @@ describe('prepare image scanner job', function () {
         expect(Cache::get(PrepareImageScannerJob::diskUsedCacheKey($this->server)))->toBe(1234);
     });
 
-    it('updates the database under the scan lock and runs again later when it is busy', function () {
+    it('prepares the scanner under the scan lock and runs again later when it is busy', function () {
         fakeScannerPreparation();
         $lock = ScanImage::serverLock($this->server);
         $lock->get();
@@ -255,8 +332,8 @@ describe('prepare image scanner job', function () {
         $job->handle();
         $lock->release();
 
-        Process::assertDidntRun(fn (PendingProcess $process) => str_contains(remoteProcessScript($process), 'coolify-scan-exit db-update'));
-        expect(Cache::get(PrepareImageScannerJob::stateCacheKey($this->server)))->toBe('updating_database');
+        Process::assertNothingRan();
+        expect(Cache::get(PrepareImageScannerJob::stateCacheKey($this->server)))->toBe('pulling');
     });
 
     it('is unique per server', function () {
