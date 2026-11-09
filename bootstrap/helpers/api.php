@@ -120,7 +120,7 @@ function apiEnvironmentVariableDisplayValue(mixed $data): mixed
 /**
  * Remove the saved proxy configuration and validation logs from every
  * serialized server in an API payload, including nested ones such as
- * `destination.server`, unless the token can read sensitive data.
+ * `destination.server`, unless the token can read sensitive server data.
  * The saved proxy configuration often contains DNS provider API tokens.
  *
  * @template T
@@ -130,11 +130,20 @@ function apiEnvironmentVariableDisplayValue(mixed $data): mixed
  */
 function removeServerProxySecretsFromApiPayload(mixed $payload): mixed
 {
-    if (request()->attributes->get('can_read_sensitive', false) === true) {
+    if (canReadServerSecretsFromApi()) {
         return $payload;
     }
 
     return removeServerProxySecrets($payload);
+}
+
+/**
+ * True when the API token can read server secrets (Sentinel token, log drain keys, proxy configuration).
+ * A token limited to some projects, environments, or resources cannot, because servers are team-level.
+ */
+function canReadServerSecretsFromApi(): bool
+{
+    return request()->attributes->get('can_read_server_sensitive', false) === true;
 }
 
 /**
@@ -434,6 +443,7 @@ function migrateResourceToDestination(Request $request, $resource, string $resou
     if (! $destination || ! $destination->server?->canHostResources()) {
         return response()->json(['message' => 'Destination not found.'], 404);
     }
+    Gate::authorize('placeResource', $destination->server);
 
     $sourceDestination = $resource->destination;
     $migrateVolumes = $request->boolean('migrate_volumes', true);

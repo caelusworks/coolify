@@ -150,7 +150,9 @@ class ApplicationsController extends Controller
                 'value',
                 'real_value',
             ]);
-            $this->exposeNestedServerSecrets($application);
+            if (canReadServerSecretsFromApi()) {
+                $this->exposeNestedServerSecrets($application);
+            }
         } else {
             $application->makeHidden([
                 'private_key_id',
@@ -272,7 +274,7 @@ class ApplicationsController extends Controller
 
     /**
      * Expose sensitive fields on eager-loaded nested Server + ServerSetting
-     * relations for callers with the `read:sensitive` or `root` token ability.
+     * relations for tokens that can read server secrets (`canReadServerSecretsFromApi()`).
      * Models hide these by default via $hidden; this re-exposes them per-request.
      */
     private function exposeNestedServerSecrets($model): void
@@ -350,7 +352,7 @@ class ApplicationsController extends Controller
         }
 
         $tagName = $request->query('tag');
-        $applicationRelations = $request->attributes->get('can_read_sensitive', false) === true
+        $applicationRelations = canReadServerSecretsFromApi()
             ? ['destination.server.settings']
             : [];
 
@@ -1752,6 +1754,7 @@ class ApplicationsController extends Controller
         if (! $server) {
             return response()->json(['message' => 'Server not found.'], 404);
         }
+        $this->authorize('placeResource', $server);
         if (! $server->canHostResources()) {
             return response()->json([
                 'message' => 'Validation failed.',
@@ -2081,6 +2084,7 @@ class ApplicationsController extends Controller
             if ($return instanceof JsonResponse) {
                 return $return;
             }
+            $this->authorize('useTeamCredentials');
             $sourceRepository = $type === 'private-gh-app'
                 ? $this->githubAppRepository($request->github_app_uuid, $request->git_repository, $teamId)
                 : $this->giteaAppRepository($this->teamSourceByUuid(GiteaApp::class, $request->gitea_app_uuid, $teamId), $request->git_repository);
@@ -2325,6 +2329,7 @@ class ApplicationsController extends Controller
             if (! $privateKey) {
                 return response()->json(['message' => 'Private Key not found.'], 404);
             }
+            $this->authorize('useTeamCredentials');
 
             $application = new Application;
             removeUnnecessaryFieldsFromRequest($request);
@@ -3679,6 +3684,10 @@ class ApplicationsController extends Controller
             'ports_exposes' => 'nullable|string|regex:/^(\d+)(,\d+)*$/',
         ];
         $validationRules = array_merge(sharedDataApplications($application), $validationRules);
+        // A change of Gitea source checks the repository against the Gitea instance below.
+        if ($request->input('git_repository') !== $application->git_repository && ! $request->has('gitea_app_uuid')) {
+            $validationRules['git_repository'] = ['string', new ValidGitRepositoryUrl(allowRepositoryPath: true)];
+        }
         $validationMessages = [
             ...ValidationPatterns::combinedMessages(),
             'docker_compose_domains.*.array' => 'An item in the docker_compose_domains array has invalid fields. Only name, domain, and redirect fields are supported.',
@@ -3783,6 +3792,9 @@ class ApplicationsController extends Controller
             $newSource = $this->teamSourceByUuid($sourceClass, $request->input($sourceUuidField), $teamId);
             if (! $newSource?->isConnected()) {
                 return response()->json(['message' => $sourceClass === GithubApp::class ? 'Github App not found.' : 'Gitea App not found.'], 404);
+            }
+            if (! $application->source?->is($newSource)) {
+                $this->authorize('useTeamCredentials', $application);
             }
         }
         $giteaRepository = null;
@@ -6476,6 +6488,7 @@ class ApplicationsController extends Controller
         if (! $destination || ! $destination->server?->canHostResources()) {
             return response()->json(['message' => 'Destination not found.'], 404);
         }
+        $this->authorize('placeResource', $destination->server);
 
         $overrides = ['uuid' => new_public_id()];
         if ($request->filled('name')) {
@@ -6577,7 +6590,7 @@ class ApplicationsController extends Controller
             content: new OA\JsonContent(
                 required: ['commit'],
                 properties: [
-                    new OA\Property(property: 'commit', type: 'string', description: 'Image tag / commit to roll back to.'),
+                    new OA\Property(property: 'commit', type: 'string', description: 'Image tag / commit to roll back to. Must be a tag from the rollback images list or the commit of a successful production deployment.'),
                 ]
             )
         ),
@@ -6640,6 +6653,13 @@ class ApplicationsController extends Controller
             return response()->json([
                 'message' => 'Validation failed.',
                 'errors' => ['commit' => [$e->getMessage()]],
+            ], 422);
+        }
+
+        if (! GetRollbackImages::allows($application, $commit)) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => ['commit' => ['The commit is not a rollback image or a successful deployment of this application.']],
             ], 422);
         }
 
@@ -6790,6 +6810,7 @@ class ApplicationsController extends Controller
         if (! $destination || ! $destination->server?->canHostResources()) {
             return response()->json(['message' => 'Destination not found.'], 404);
         }
+        $this->authorize('placeResource', $destination->server);
 
         if ($application->destination_id === $destination->id && $application->destination_type === $destination->getMorphClass()) {
             return response()->json(['message' => 'Destination is already the primary destination.'], 422);

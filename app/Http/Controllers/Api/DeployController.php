@@ -17,6 +17,7 @@ use App\Models\Service;
 use App\Models\Tag;
 use App\Services\Access\AccessResolver;
 use App\Support\ResourceStartActivity;
+use App\Support\ValidationPatterns;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\Request;
 use OpenApi\Attributes as OA;
@@ -336,7 +337,7 @@ class DeployController extends Controller
             new OA\Parameter(name: 'force', in: 'query', description: 'Force rebuild (without cache)', schema: new OA\Schema(type: 'boolean')),
             new OA\Parameter(name: 'pr', in: 'query', description: 'Pull Request Id for deploying specific PR builds. Cannot be used with tag parameter.', schema: new OA\Schema(type: 'integer', maximum: 2147483647)),
             new OA\Parameter(name: 'pull_request_id', in: 'query', description: 'Preview deployment identifier. Alias of pr.', schema: new OA\Schema(type: 'integer', maximum: 2147483647)),
-            new OA\Parameter(name: 'docker_tag', in: 'query', description: 'Docker image tag for Docker Image preview deployments. Requires pull_request_id.', schema: new OA\Schema(type: 'string')),
+            new OA\Parameter(name: 'docker_tag', in: 'query', description: 'Docker image tag for Docker Image preview deployments. Requires pull_request_id. Opening a preview or changing its tag also needs the write permission.', schema: new OA\Schema(type: 'string')),
             new OA\Parameter(name: 'cancel_previous', in: 'query', description: 'Cancel the older webhook, API, and MCP deployments of the same application, pull request, and server. `queued` cancels the ones that wait in the queue. `building` also stops the ones that are still building; a deployment that already started to replace containers always finishes. Manual, restart, and rollback deployments are never cancelled. Default: `none`.', schema: new OA\Schema(type: 'string', enum: ['none', 'queued', 'building'], default: 'none')),
         ],
 
@@ -405,6 +406,9 @@ class DeployController extends Controller
         if ($tags && $pr) {
             return response()->json(['message' => 'You can only use tag or pr, not both.'], 400);
         }
+        if (! ValidationPatterns::isValidDockerImageTag($dockerTag, allowVariables: false)) {
+            return response()->json(['message' => 'docker_tag must be a valid Docker tag: letters, digits, underscores, periods, and dashes, at most 128 characters.'], 400);
+        }
         if ($dockerTag && $pr === 0) {
             return response()->json(['message' => 'docker_tag requires pull_request_id.'], 400);
         }
@@ -442,7 +446,14 @@ class DeployController extends Controller
 
                             continue;
                         }
-                        $preview = $this->upsertDockerImagePreview($resource, $pr, $dockerTag);
+                        $preview = $resource->previews()->where('pull_request_id', $pr)->first();
+                        $changesPreview = $dockerTag !== null && $dockerTag !== $preview?->docker_registry_image_tag;
+                        if ($changesPreview && ! $this->canChangePreview($resource)) {
+                            $deployments->push(['message' => 'Missing required permissions: write. Opening a preview or changing its docker tag needs the write permission.', 'resource_uuid' => $uuid]);
+
+                            continue;
+                        }
+                        $preview = $this->upsertDockerImagePreview($resource, $pr, $dockerTag, $preview);
                         $dockerTagForResource = $preview?->docker_registry_image_tag;
                     } else {
                         $preview = $resource->previews()->where('pull_request_id', $pr)->first();
@@ -619,10 +630,18 @@ class DeployController extends Controller
         return ['message' => $message, 'deployment_uuid' => $deployment_uuid];
     }
 
-    private function upsertDockerImagePreview(Application $application, int $pullRequestId, ?string $dockerTag): ?ApplicationPreview
+    /**
+     * Opening a preview or changing its docker tag changes what runs, so it needs the write permission and the update policy, as in the UI.
+     */
+    private function canChangePreview(Application $application): bool
     {
-        $preview = $application->previews()->where('pull_request_id', $pullRequestId)->first();
+        $user = auth()->user();
 
+        return ($user->tokenCan('write') || $user->tokenCan('root')) && $user->can('update', $application);
+    }
+
+    private function upsertDockerImagePreview(Application $application, int $pullRequestId, ?string $dockerTag, ?ApplicationPreview $preview): ?ApplicationPreview
+    {
         if (! $preview && $dockerTag === null) {
             return null;
         }

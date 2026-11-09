@@ -253,6 +253,8 @@ class DatabasesController extends Controller
                 'mariadb_root_password',
                 ...$database::CONFIGURATION_ATTRIBUTES,
             ]);
+        }
+        if (canReadServerSecretsFromApi()) {
             $this->exposeNestedServerSecrets($database);
         } else {
             $this->hideNestedServerSecrets($database, $loadNestedServerSecrets);
@@ -301,7 +303,7 @@ class DatabasesController extends Controller
 
     /**
      * Expose sensitive fields on eager-loaded nested Server + ServerSetting
-     * relations for callers with the `read:sensitive` or `root` token ability.
+     * relations for tokens that can read server secrets (`canReadServerSecretsFromApi()`).
      */
     private function exposeNestedServerSecrets(Model $model): void
     {
@@ -363,7 +365,7 @@ class DatabasesController extends Controller
         }
         $projects = Project::where('team_id', $teamId)->get();
         $databases = collect();
-        $databaseRelations = $request->attributes->get('can_read_sensitive', false) === true
+        $databaseRelations = canReadServerSecretsFromApi()
             ? ['destination.server.settings']
             : [];
 
@@ -1244,6 +1246,11 @@ class DatabasesController extends Controller
         if (! isset($backupData['enabled'])) {
             $backupData['enabled'] = true;
         }
+        $backupData['save_s3'] ??= false;
+
+        if ($s3Storages?->isNotEmpty()) {
+            $this->authorize('useTeamCredentials', $database);
+        }
 
         $backupConfig = ScheduledDatabaseBackup::create($backupData);
         if ($s3Storages !== null) {
@@ -1495,6 +1502,10 @@ class DatabasesController extends Controller
             if ($currentStorageIds->contains($storageIds->first())) {
                 $storageIds = $currentStorageIds;
             }
+        }
+
+        if ($storageIds !== null && $backupConfig->newS3StorageIds($storageIds)->isNotEmpty()) {
+            $this->authorize('useTeamCredentials', $database);
         }
 
         $backupConfig->update($backupData);
@@ -2204,6 +2215,7 @@ class DatabasesController extends Controller
         if (! $server) {
             return response()->json(['message' => 'Server not found.'], 404);
         }
+        $this->authorize('placeResource', $server);
         if (! $server->canHostResources()) {
             return response()->json([
                 'message' => 'Validation failed.',
@@ -5273,6 +5285,7 @@ class DatabasesController extends Controller
         if (! $destination || ! $destination->server?->canHostResources()) {
             return response()->json(['message' => 'Destination not found.'], 404);
         }
+        $this->authorize('placeResource', $destination->server);
 
         $uuid = new_public_id();
         $name = $request->filled('name')
