@@ -23,9 +23,11 @@ use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use League\Flysystem\Filesystem;
 use League\Flysystem\FilesystemAdapter as FlysystemAdapter;
+use phpseclib3\Exception\UnableToConnectException;
 
 class S3Storage extends BaseModel
 {
@@ -558,6 +560,7 @@ class S3Storage extends BaseModel
                 if ($adapter instanceof SftpFilesystemAdapter && $this->sftp_host_key === null) {
                     $this->pinSftpHostKey((string) $adapter->presentedHostKey(), $shouldSave);
                 }
+                $this->assertWritable($disk);
             }
 
             $this->unusable_email_sent = false;
@@ -592,6 +595,33 @@ class S3Storage extends BaseModel
             if ($shouldSave) {
                 $this->save();
             }
+        }
+    }
+
+    /**
+     * Creates the base directory, then writes and deletes a small file, as a backup upload does. Listing alone passes
+     * on a directory that the user cannot create or write, for example "/backups" on a Hetzner Storage Box.
+     */
+    private function assertWritable(FilesystemAdapter $disk): void
+    {
+        $adapter = $disk->getAdapter();
+        $file = '.coolify-write-test-'.Str::lower(Str::random(12));
+
+        try {
+            if ($adapter instanceof SftpFilesystemAdapter) {
+                $adapter->createRootDirectory($this->basePath());
+            }
+            $disk->getDriver()->write($file, 'coolify');
+        } catch (\Throwable $exception) {
+            $directory = $this->basePath() === '' ? 'the login directory' : '"'.$this->basePath().'"';
+
+            throw new \RuntimeException('Coolify cannot write to '.$directory.' on the storage: '.$exception->getMessage(), previous: $exception);
+        }
+
+        try {
+            $disk->getDriver()->delete($file);
+        } catch (\Throwable) {
+            // Some servers allow uploads but not deletes. Backups still work there.
         }
     }
 
@@ -956,6 +986,15 @@ class S3Storage extends BaseModel
 
     private function toUserFriendlyConnectionException(\Throwable $exception): \Throwable
     {
+        $rootCause = $exception;
+        while ($rootCause->getPrevious() !== null) {
+            $rootCause = $rootCause->getPrevious();
+        }
+        if ($rootCause instanceof UnableToConnectException) {
+            // Flysystem shows only "Unable to connect to host". The network error (refused, timed out) is in phpseclib.
+            return new \RuntimeException('Could not connect to the '.$this->storageType()->label().' server: '.$rootCause->getMessage(), previous: $exception);
+        }
+
         $message = str($exception->getMessage())->lower();
 
         if ($message->contains(['timed out', 'timeout', 'connection refused', 'could not resolve', 'curl error 28'])) {
